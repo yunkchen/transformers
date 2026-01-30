@@ -24,7 +24,7 @@ from ...modeling_outputs import BaseModelOutput, ImageClassifierOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging
-from ...utils.generic import check_model_inputs
+from ...utils.generic import OutputRecorder, check_model_inputs
 from .configuration_vjepa2 import VJEPA2Config
 
 
@@ -435,11 +435,6 @@ class VJEPA2Layer(GradientCheckpointingLayer):
 
 
 class VJEPA2Encoder(nn.Module):
-    _can_record_outputs = {
-        "attentions": VJEPA2Layer,
-        "hidden_states": VJEPA2Layer,
-    }
-
     def __init__(self, config: VJEPA2Config):
         super().__init__()
         self.config = config
@@ -464,7 +459,6 @@ class VJEPA2Encoder(nn.Module):
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.gradient_checkpointing = False
 
-    @check_model_inputs
     def forward(
         self,
         pixel_values_videos: torch.Tensor | None = None,
@@ -571,11 +565,6 @@ class VJEPA2PredictorEmbeddings(nn.Module):
 
 
 class VJEPA2Predictor(nn.Module):
-    _can_record_outputs = {
-        "attentions": VJEPA2Layer,
-        "hidden_states": VJEPA2Layer,
-    }
-
     def __init__(self, config: VJEPA2Config):
         super().__init__()
         self.config = config
@@ -623,7 +612,6 @@ class VJEPA2Predictor(nn.Module):
         hidden_states = torch.gather(hidden_states, dim=1, index=reverse_argsort)
         return hidden_states
 
-    @check_model_inputs
     def forward(
         self,
         encoder_hidden_states: torch.Tensor,
@@ -911,6 +899,10 @@ class VJEPA2PreTrainedModel(PreTrainedModel):
     ]
     _supports_sdpa = True
     _supports_flash_attn = True
+    _can_record_outputs = {
+        "hidden_states": OutputRecorder(VJEPA2Layer, layer_name="encoder.layer"),
+        "attentions": OutputRecorder(VJEPA2RopeAttention, index=1, layer_name="encoder.layer"),
+    }
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -954,7 +946,7 @@ class VJEPA2Model(VJEPA2PreTrainedModel):
     def get_input_embeddings(self) -> VJEPA2PatchEmbeddings3D:
         return self.encoder.embeddings.patch_embeddings
 
-    @can_return_tuple
+    @check_model_inputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
