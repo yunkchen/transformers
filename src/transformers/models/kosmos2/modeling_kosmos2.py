@@ -37,7 +37,7 @@ from ...modeling_outputs import (
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging, torch_int
-from ...utils.generic import is_flash_attention_requested
+from ...utils.generic import check_model_inputs, is_flash_attention_requested
 from .configuration_kosmos2 import Kosmos2Config, Kosmos2TextConfig, Kosmos2VisionConfig
 
 
@@ -312,7 +312,7 @@ class Kosmos2VisionAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         causal_attention_mask: torch.Tensor | None = None,
-        output_attentions: bool | None = False,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Input shape: Batch x Time x Channel"""
 
@@ -348,12 +348,11 @@ class Kosmos2VisionAttention(nn.Module):
             is_causal=self.is_causal,
             scaling=self.scale,
             dropout=0.0 if not self.training else self.dropout,
+            **kwargs,
         )
 
         attn_output = attn_output.reshape(batch_size, seq_length, embed_dim).contiguous()
         attn_output = self.out_proj(attn_output)
-        if not output_attentions:
-            attn_weights = None
         return attn_output, attn_weights
 
 
@@ -424,16 +423,13 @@ class Kosmos2VisionEncoder(nn.Module):
         self.layers = nn.ModuleList([Kosmos2VisionEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
-    @can_return_tuple
     def forward(
         self,
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
         causal_attention_mask: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-    ) -> tuple | BaseModelOutput:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
@@ -454,45 +450,20 @@ class Kosmos2VisionEncoder(nn.Module):
                 - 0 for tokens that are **masked**.
 
                 [What are attention masks?](../glossary#attention-mask)
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            output_hidden_states (`bool`, *optional*):
-                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
-                for more detail.
-            return_dict (`bool`, *optional*):
-                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        encoder_states = () if output_hidden_states else None
-        all_attentions = () if output_attentions else None
-
         hidden_states = inputs_embeds
         for idx, encoder_layer in enumerate(self.layers):
-            if output_hidden_states:
-                encoder_states = encoder_states + (hidden_states,)
             layer_outputs = encoder_layer(
                 hidden_states,
                 attention_mask,
                 causal_attention_mask,
-                output_attentions=output_attentions,
+                **kwargs,
             )
 
-            hidden_states = layer_outputs[0]
-
-            if output_attentions:
-                all_attentions = all_attentions + (layer_outputs[1],)
-
-        if output_hidden_states:
-            encoder_states = encoder_states + (hidden_states,)
+            hidden_states = layer_outputs
 
         return BaseModelOutputWithProjectionAttentions(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
+            last_hidden_state=hidden_states,
         )
 
 
@@ -512,17 +483,9 @@ class Kosmos2VisionTransformer(nn.Module):
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool = False,
-        return_dict: bool | None = None,
-    ) -> tuple | BaseModelOutputWithPooling:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutputWithPooling:
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
 
@@ -531,23 +494,16 @@ class Kosmos2VisionTransformer(nn.Module):
 
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
         last_hidden_state = encoder_outputs[0]
         pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.post_layernorm(pooled_output)
 
-        if not return_dict:
-            return (last_hidden_state, pooled_output) + encoder_outputs[1:]
-
         return BaseModelOutputWithPooling(
             last_hidden_state=last_hidden_state,
             pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
         )
 
 
@@ -1121,6 +1077,10 @@ class Kosmos2PreTrainedModel(PreTrainedModel):
     _supports_attention_backend = True
     _supports_flash_attn = True
     _supports_sdpa = True
+    _can_record_outputs = {
+        "hidden_states": Kosmos2VisionEncoderLayer,
+        "attentions": Kosmos2VisionAttention,
+    }
 
     @torch.no_grad()
     def _init_weights(self, module: nn.Module):
@@ -1198,22 +1158,18 @@ class Kosmos2VisionModel(Kosmos2PreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.model.embeddings.patch_embedding
 
+    @check_model_inputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool = False,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithProjectionAttentions:
         return self.model(
             pixel_values=pixel_values,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             interpolate_pos_encoding=interpolate_pos_encoding,
-            return_dict=return_dict,
+            **kwargs,
         )
 
 
@@ -1492,7 +1448,7 @@ class Kosmos2Model(Kosmos2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.text_model.model.embed_tokens = value
 
-    @can_return_tuple
+    @check_model_inputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_image_features(
         self,
