@@ -1004,9 +1004,15 @@ class GroupedGemmParallel(TensorParallelLayer):
                 f"Global number of experts must be divisible by number of devices: {global_num_experts} % {self.device_mesh.size()} != 0"
             )
         local_num_experts = global_num_experts // self.device_mesh.size()
-        return param[self.rank * local_num_experts : (self.rank + 1) * local_num_experts].to(
-            device=device, dtype=dtype
-        )
+        shard_size = local_num_experts
+        start = device.index * shard_size
+        end = (device.index+1) * shard_size
+        # special case we don't "shard" just send this entire tensor to the correct rank.
+        if start <= tensor_idx < end:
+            # this tensor does need to be materialized on this device:
+            return param[:]
+        else:
+            return []
 
     def get_expected_sharded_shape(self, full_shape: tuple[int, ...] | torch.Size) -> tuple[int, ...]:
         # GroupedGemm shards on dim 0 (experts dimension)
