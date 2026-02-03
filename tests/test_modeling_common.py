@@ -115,6 +115,7 @@ from transformers.utils import (
 )
 
 from .generation.test_utils import GenerationTesterMixin
+from .test_tensor_parallel_mixin import TensorParallelTesterMixin
 
 
 if is_torch_available():
@@ -680,7 +681,7 @@ def sdpa_kernel(enable_flash, enable_math, enable_mem_efficient):
 
 
 @require_torch
-class ModelTesterMixin:
+class ModelTesterMixin(TensorParallelTesterMixin):
     model_tester = None
     all_model_classes = ()
     test_resize_embeddings = True

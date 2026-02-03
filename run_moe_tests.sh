@@ -1,18 +1,19 @@
 #!/bin/bash
 
 # Script to run tensor parallel (TP) tests for MoE models
-# Tests are run sequentially as each TP test uses 2 GPUs internally
+# Tests are run in parallel using GPU pairs (each TP test uses 2 GPUs)
 # Usage: ./run_moe_tests.sh /path/to/results
 
 # Define colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
+GREY='\033[0;90m'
 DIM='\033[0;90m'
 NC='\033[0m' # No Color
 
-# Number of GPUs required for TP tests
-NUM_GPUS=2
+# Number of GPUs required per TP test
+GPUS_PER_TEST=2
 
 # Define models to test (model_name -> test_file)
 declare -A MODELS=(
@@ -53,13 +54,14 @@ declare -A MODELS=(
     ["switch_transformers"]="tests/models/switch_transformers/test_modeling_switch_transformers.py"
 )
 
-# Check that we have at least 2 GPUs
+# Check available GPUs and calculate parallel slots
 AVAILABLE_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
-if [ "$AVAILABLE_GPUS" -lt "$NUM_GPUS" ]; then
-    echo "Need at least $NUM_GPUS GPUs for TP tests, but only $AVAILABLE_GPUS detected!"
+if [ "$AVAILABLE_GPUS" -lt "$GPUS_PER_TEST" ]; then
+    echo "Need at least $GPUS_PER_TEST GPUs for TP tests, but only $AVAILABLE_GPUS detected!"
     exit 1
 fi
-echo "Using $NUM_GPUS GPUs for TP tests (available: $AVAILABLE_GPUS)"
+NUM_PARALLEL=$((AVAILABLE_GPUS / GPUS_PER_TEST))
+echo "Using $AVAILABLE_GPUS GPUs ($NUM_PARALLEL parallel test slots, $GPUS_PER_TEST GPUs each)"
 
 # Handle results directory - use provided path or create temp directory
 if [ -n "$1" ]; then
@@ -84,32 +86,53 @@ echo "Results directory: $RESULTS_DIR"
 
 echo "=========================================="
 echo "  MoE Models TP Test Script"
-echo "  (Sequential execution using $NUM_GPUS GPUs)"
+echo "  (Parallel execution: $NUM_PARALLEL tests at a time)"
 echo "=========================================="
 echo ""
 
-# Function to run TP pytest tests
+# Function to run TP pytest tests on a specific GPU pair
 run_test() {
     local model_name=$1
     local test_file=$2
+    local slot_id=$3
     local result_file="$RESULTS_DIR/${model_name}.result"
     
-    echo -e "${YELLOW}Starting: ${model_name} (${test_file})${NC}"
+    # Calculate GPU pair for this slot (slot 0 -> GPUs 0,1; slot 1 -> GPUs 2,3; etc.)
+    local gpu_start=$((slot_id * GPUS_PER_TEST))
+    local gpu_end=$((gpu_start + GPUS_PER_TEST - 1))
+    local gpu_list="${gpu_start},${gpu_end}"
     
-    # Run only tensor parallel tests using first 2 GPUs
-    CUDA_VISIBLE_DEVICES=0,1 \
-        python -m pytest -v "$test_file" -k "test_tensor_parallel" \
+    echo -e "${YELLOW}[GPUs ${gpu_list}] Starting: ${model_name}${NC}"
+    
+    # Run only tensor parallel tests using assigned GPU pair
+    CUDA_VISIBLE_DEVICES=$gpu_list \
+        python -m pytest -v -rs "$test_file" -k "test_tensor_parallel" \
         > "$RESULTS_DIR/${model_name}.log" 2>&1
     
     local exit_code=$?
+    local log_file="$RESULTS_DIR/${model_name}.log"
+    
+    # Check if all tests were skipped (exit code 0 but only skipped tests)
+    local skipped_only=false
+    if [ $exit_code -eq 0 ]; then
+        # Check if there were any passed tests or only skipped
+        if grep -q "passed" "$log_file"; then
+            skipped_only=false
+        elif grep -q "skipped" "$log_file"; then
+            skipped_only=true
+        fi
+    fi
     
     # Write result to file (for collection later)
-    if [ $exit_code -eq 0 ]; then
+    if [ "$skipped_only" = true ]; then
+        echo "SKIPPED" > "$result_file"
+        echo -e "${GREY}○ [GPUs ${gpu_list}] ${model_name}: SKIPPED${NC}"
+    elif [ $exit_code -eq 0 ]; then
         echo "SUCCESS" > "$result_file"
-        echo -e "${GREEN}✓ ${model_name}: SUCCESS${NC}"
+        echo -e "${GREEN}✓ [GPUs ${gpu_list}] ${model_name}: SUCCESS${NC}"
     else
         echo "FAILED (exit code: $exit_code)" > "$result_file"
-        echo -e "${RED}✗ ${model_name}: FAILED (exit code: $exit_code)${NC}"
+        echo -e "${RED}✗ [GPUs ${gpu_list}] ${model_name}: FAILED (exit code: $exit_code)${NC}"
     fi
 }
 
@@ -117,11 +140,38 @@ run_test() {
 MODEL_NAMES=(${!MODELS[@]})
 NUM_MODELS=${#MODEL_NAMES[@]}
 
-# Run tests sequentially (each TP test uses 2 GPUs internally)
-for model_name in "${MODEL_NAMES[@]}"; do
+# Track PIDs for waiting
+declare -a PIDS=()
+declare -a SLOTS=()
+
+# Launch tests in parallel, cycling through available GPU pairs
+for i in "${!MODEL_NAMES[@]}"; do
+    model_name="${MODEL_NAMES[$i]}"
     test_file="${MODELS[$model_name]}"
-    run_test "$model_name" "$test_file"
+    slot_id=$((i % NUM_PARALLEL))
+    
+    # If we've used all slots, wait for a slot to free up
+    if [ ${#PIDS[@]} -ge $NUM_PARALLEL ]; then
+        # Wait for any one process to complete
+        wait -n 2>/dev/null || wait "${PIDS[0]}"
+        # Remove completed PIDs (simplified: just clear and rebuild)
+        NEW_PIDS=()
+        for pid in "${PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                NEW_PIDS+=("$pid")
+            fi
+        done
+        PIDS=("${NEW_PIDS[@]}")
+    fi
+    
+    run_test "$model_name" "$test_file" "$slot_id" &
+    PIDS+=($!)
 done
+
+# Wait for all remaining background jobs to complete
+echo ""
+echo "Waiting for all tests to complete..."
+wait
 
 # Print summary
 echo ""
@@ -132,6 +182,7 @@ echo ""
 
 success_count=0
 fail_count=0
+skip_count=0
 
 for model_name in "${MODEL_NAMES[@]}"; do
     result_file="$RESULTS_DIR/${model_name}.result"
@@ -140,6 +191,9 @@ for model_name in "${MODEL_NAMES[@]}"; do
         if [[ "$result" == "SUCCESS" ]]; then
             echo -e "${GREEN}✓ ${model_name}: ${result}${NC}"
             ((success_count++))
+        elif [[ "$result" == "SKIPPED" ]]; then
+            echo -e "${GREY}○ ${model_name}: ${result}${NC}"
+            ((skip_count++))
         else
             echo -e "${RED}✗ ${model_name}: ${result}${NC}"
             # Show last few lines of error
@@ -155,7 +209,7 @@ done
 
 echo ""
 echo "-------------------------------------------"
-echo -e "Total: ${GREEN}${success_count} passed${NC}, ${RED}${fail_count} failed${NC}"
+echo -e "Total: ${GREEN}${success_count} passed${NC}, ${GREY}${skip_count} skipped${NC}, ${RED}${fail_count} failed${NC}"
 echo "=========================================="
 
 # Show logs for failed tests
