@@ -34,6 +34,8 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
+from ...utils.generic import check_model_inputs
+from ...utils.generic import check_model_inputs
 from .configuration_markuplm import MarkupLMConfig
 
 
@@ -364,7 +366,7 @@ class MarkupLMSelfAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
         input_shape = hidden_states.shape[:-1]
@@ -405,7 +407,7 @@ class MarkupLMAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_outputs = self.self(
             hidden_states,
@@ -431,7 +433,7 @@ class MarkupLMLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_attention_outputs = self.attention(
             hidden_states,
@@ -486,6 +488,10 @@ class MarkupLMEncoder(nn.Module):
 class MarkupLMPreTrainedModel(PreTrainedModel):
     config: MarkupLMConfig
     base_model_prefix = "markuplm"
+    _can_record_outputs = {
+        "hidden_states": MarkupLMLayer,
+        "attentions": MarkupLMSelfAttention,
+    }
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -522,7 +528,7 @@ class MarkupLMModel(MarkupLMPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 
-    @can_return_tuple
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -533,10 +539,7 @@ class MarkupLMModel(MarkupLMPreTrainedModel):
         token_type_ids: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPooling:
         r"""
         xpath_tags_seq (`torch.LongTensor` of shape `(batch_size, sequence_length, config.max_depth)`, *optional*):
@@ -561,12 +564,6 @@ class MarkupLMModel(MarkupLMPreTrainedModel):
         >>> list(last_hidden_states.shape)
         [1, 4, 768]
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -600,9 +597,7 @@ class MarkupLMModel(MarkupLMPreTrainedModel):
         encoder_outputs = self.encoder(
             embedding_output,
             extended_attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
@@ -610,8 +605,6 @@ class MarkupLMModel(MarkupLMPreTrainedModel):
         return BaseModelOutputWithPooling(
             last_hidden_state=sequence_output,
             pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
         )
 
 
@@ -641,10 +634,7 @@ class MarkupLMForQuestionAnswering(MarkupLMPreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         start_positions: torch.Tensor | None = None,
         end_positions: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | QuestionAnsweringModelOutput:
         r"""
         xpath_tags_seq (`torch.LongTensor` of shape `(batch_size, sequence_length, config.max_depth)`, *optional*):
@@ -676,8 +666,6 @@ class MarkupLMForQuestionAnswering(MarkupLMPreTrainedModel):
         >>> processor.decode(predict_answer_tokens).strip()
         'Niels'
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         outputs = self.markuplm(
             input_ids,
             xpath_tags_seq=xpath_tags_seq,
@@ -686,9 +674,7 @@ class MarkupLMForQuestionAnswering(MarkupLMPreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
 
         sequence_output = outputs[0]
@@ -757,10 +743,7 @@ class MarkupLMForTokenClassification(MarkupLMPreTrainedModel):
         position_ids: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | MaskedLMOutput:
         r"""
         xpath_tags_seq (`torch.LongTensor` of shape `(batch_size, sequence_length, config.max_depth)`, *optional*):
@@ -791,8 +774,6 @@ class MarkupLMForTokenClassification(MarkupLMPreTrainedModel):
         >>> loss = outputs.loss
         >>> logits = outputs.logits
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         outputs = self.markuplm(
             input_ids,
             xpath_tags_seq=xpath_tags_seq,
@@ -801,9 +782,7 @@ class MarkupLMForTokenClassification(MarkupLMPreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
 
         sequence_output = outputs[0]
@@ -860,10 +839,7 @@ class MarkupLMForSequenceClassification(MarkupLMPreTrainedModel):
         position_ids: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | SequenceClassifierOutput:
         r"""
         xpath_tags_seq (`torch.LongTensor` of shape `(batch_size, sequence_length, config.max_depth)`, *optional*):
@@ -893,8 +869,6 @@ class MarkupLMForSequenceClassification(MarkupLMPreTrainedModel):
         >>> loss = outputs.loss
         >>> logits = outputs.logits
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         outputs = self.markuplm(
             input_ids,
             xpath_tags_seq=xpath_tags_seq,
@@ -903,9 +877,7 @@ class MarkupLMForSequenceClassification(MarkupLMPreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
 
         pooled_output = outputs[1]
