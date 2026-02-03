@@ -635,6 +635,7 @@ class GenerationTesterMixin:
 
     @parameterized.expand([("random",), ("same",)])
     @pytest.mark.generate
+    @is_flaky  # Matt: These tests have some inherent variability. It'd be cool to make them deterministic!
     def test_assisted_decoding_matches_greedy_search(self, assistant_type):
         # This test ensures that the assisted generation does not introduce output changes over greedy search.
         # See https://github.com/huggingface/transformers/issues/25420#issuecomment-1775317535 for more info.
@@ -732,7 +733,7 @@ class GenerationTesterMixin:
                 self._check_generate_outputs(output, model.config, use_cache=True)
 
     @pytest.mark.generate
-    @is_flaky
+    @is_flaky  # Matt: These tests have some inherent variability. It'd be cool to make them deterministic!
     def test_prompt_lookup_decoding_matches_greedy_search(self):
         # This test ensures that the prompt lookup generation does not introduce output changes over greedy search.
         # This test is mostly a copy of test_assisted_decoding_matches_greedy_search
