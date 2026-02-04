@@ -196,7 +196,7 @@ def grouped_mm_experts_forward(
         raise ImportError(
             "torch._grouped_mm is not available. Please make sure you are using a PyTorch version that includes it (2.9+)."
         )
-
+    self.num_experts = self.gate_up_proj.shape[0]  # type: ignore[union-attr]
     device = hidden_states.device
     num_top_k = top_k_index.size(-1)
     num_tokens = hidden_states.size(0)
@@ -218,6 +218,12 @@ def grouped_mm_experts_forward(
     sample_weights_g = sample_weights[perm]
     selected_hidden_states_g = selected_hidden_states[perm]
 
+    ignored_tokens = sum(expert_ids_g >= self.num_experts)
+    if ignored_tokens.any():
+        sample_weights_g = sample_weights_g[:-ignored_tokens]
+        selected_hidden_states_g = selected_hidden_states_g[:-ignored_tokens]
+        expert_ids_g = expert_ids_g[:-ignored_tokens]
+
     # Select expert weights and biases for selected samples
     # NOTE: We keep all experts here and rely on offsets to target the active ones.
     # I have already implemented a version that only passes the active experts, but
@@ -225,6 +231,7 @@ def grouped_mm_experts_forward(
     # Also there were no speedup gains from it in my experiments, even in eager mode.
     selected_gate_up = self.gate_up_proj
     selected_down = self.down_proj
+
     selected_gate_up_bias = self.gate_up_proj_bias[expert_ids_g] if self.has_bias else None
     selected_down_bias = self.down_proj_bias[expert_ids_g] if self.has_bias else None
 
@@ -232,7 +239,7 @@ def grouped_mm_experts_forward(
     # using histc instead of bincount to avoid cuda graph issues
     # With deterministic algorithms, CPU only supports float input, CUDA only supports int input.
     histc_input = expert_ids_g.float() if device.type == "cpu" else expert_ids_g.int()
-    num_tokens_per_expert = torch.histc(histc_input, bins=self.num_experts, min=0, max=self.num_experts - 1)
+    num_tokens_per_expert = torch.histc(histc_input, bins=self.num_experts, min=0, max=self.num_experts)
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
 
     # --- Up projection per expert (grouped) ---
@@ -252,7 +259,10 @@ def grouped_mm_experts_forward(
     out_per_sample_g = out_per_sample_g * sample_weights_g.unsqueeze(-1)  # (S, hidden_dim)
 
     # Restore original order
-    out_per_sample = out_per_sample_g[inv_perm]
+    # finally we need to ignore the tokens that were assigned to invalid experts
+    # we have to remove them from the inv_perm.... as out_per_sample_g doesn't contain them
+    # they are not at the end? inv_perm[expert_ids[inv_perm] >= 8]
+    out_per_sample = out_per_sample_g[inv_perm]  # (S, hidden_dim)
 
     # Accumulate results using deterministic reshape+sum instead of index_add_
     # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
