@@ -287,6 +287,7 @@ class ProcessorTesterMixin:
 
             if component_class is None and is_tokenizers_available():
                 from transformers.tokenization_utils_tokenizers import TokenizersBackend
+
                 component_class = TokenizersBackend
         elif mapping_name == "image_processor":
             from transformers.models.auto.image_processing_auto import IMAGE_PROCESSOR_MAPPING
