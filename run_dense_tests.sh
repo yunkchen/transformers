@@ -218,21 +218,27 @@ run_test() {
     
     echo -e "${YELLOW}[GPUs ${gpu_list}] Starting: ${model_name}${NC}"
     
-    # Run only tensor parallel tests using assigned GPU pair
+    # Run only tensor parallel tests from TensorParallelTesterMixin
+    # Specifically: test_tp_forward_direct, test_tp_backward_direct, test_tp_generation_direct, test_tp_generation_with_conversion
     CUDA_VISIBLE_DEVICES=$gpu_list \
-        python -m pytest -v -rs "$test_file" -k "test_tp_" \
+        python -m pytest -v -rs "$test_file" -k "test_tp_forward_direct or test_tp_backward_direct or test_tp_generation_direct or test_tp_generation_with_conversion" \
         > "$RESULTS_DIR/${model_name}.log" 2>&1
     
     local exit_code=$?
     local log_file="$RESULTS_DIR/${model_name}.log"
     
-    # Check if all tests were skipped (exit code 0 but only skipped tests)
+    # Check if all tests were skipped or deselected
     local skipped_only=false
-    if [ $exit_code -eq 0 ]; then
+    # Exit code 5 = no tests collected (all deselected)
+    if [ $exit_code -eq 5 ]; then
+        skipped_only=true
+    elif [ $exit_code -eq 0 ]; then
         # Check if there were any passed tests or only skipped
         if grep -q "passed" "$log_file"; then
             skipped_only=false
         elif grep -q "skipped" "$log_file"; then
+            skipped_only=true
+        elif grep -q "deselected" "$log_file" && ! grep -q "passed" "$log_file"; then
             skipped_only=true
         fi
     fi

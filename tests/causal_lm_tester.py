@@ -19,6 +19,7 @@ import pytest
 from parameterized import parameterized
 
 from transformers import AutoModelForCausalLM, PreTrainedConfig, set_seed
+from .test_tensor_parallel_mixin import TensorParallelTesterMixin
 from transformers.models.auto.auto_factory import getattribute_from_module
 from transformers.testing_utils import (
     _COMMON_MODEL_NAMES_MAP,
@@ -306,7 +307,7 @@ class CausalLMModelTester:
 
 @require_torch
 class CausalLMModelTest(
-    ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, TrainingTesterMixin
+    ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, TrainingTesterMixin, TensorParallelTesterMixin
 ):
     model_tester_class = None
     all_model_classes = None

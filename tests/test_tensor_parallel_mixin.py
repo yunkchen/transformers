@@ -10,64 +10,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""
-
-    Weight Loading Paths & Test Coverage
-    ====================================
-
-    There are two distinct loading paths through the dynamic weight loading system:
-
-    PATH A: Direct Load (Dense models like Llama, Mistral)
-    -------------------------------------------------------
-    Checkpoint format == Model format (no conversion needed)
-
-        Checkpoint File
-             │
-             ▼
-        from_pretrained(tp_plan="auto")
-             │
-             ▼
-        ┌─────────────────────────────┐
-        │  For each weight:           │
-        │  1. Match key (direct)      │
-        │  2. [no conversion needed]  │
-        │  3. Apply TP sharding       │
-        │  4. Set parameter           │
-        └─────────────────────────────┘
-             │
-             ▼
-        TP-Sharded Model
-
-    Tests: test_tp_forward_direct, test_tp_backward_direct, test_tp_generation_direct
-
-
-    PATH B: Conversion + Load (MoE models like Mixtral, Qwen2-MoE)
-    --------------------------------------------------------------
-    but EXCEPTION for GPT_OSS as weight by default 3D
-
-    Checkpoint format != Model format (conversion mapping required)
-
-        Original Checkpoint (unfused experts)
-             │
-             ▼
-        from_pretrained(tp_plan="auto")
-             │
-             ▼
-        ┌─────────────────────────────┐
-        │  For each weight:           │
-        │  1. Match key pattern       │
-        │  2. Apply conversion ops    │  ← MergeModulelist + Concatenate
-        │  3. Apply TP sharding       │
-        │  4. Set parameter           │
-        └─────────────────────────────┘
-             │
-             ▼
-        TP-Sharded Model (fused experts)
-
-    Tests: test_tp_generation_with_conversion
-"""
-
 import os
 import socket
 import tempfile
@@ -220,8 +162,9 @@ def _test_tp_forward_impl(_rank, model_path, model_class, atol, rtol):
     model_tp.eval()
     model.eval()
 
+    vocab_size = model.config.vocab_size
     set_seed(42)
-    input_ids = torch.randint(0, model.config.vocab_size, (2, 64)).to(device)
+    input_ids = torch.randint(0, vocab_size, (2, 64)).to(device)
 
     with torch.no_grad():
         logits = model(input_ids).logits
@@ -298,7 +241,8 @@ def _test_tp_generation_impl(_rank, model_path, model_class, atol, rtol, max_new
     model.eval()
 
     set_seed(42)
-    input_ids = torch.randint(0, model.config.vocab_size, (1, 10)).to(device)
+    vocab_size = model.config.vocab_size
+    input_ids = torch.randint(0, vocab_size, (1, 10)).to(device)
     generation_kwargs = {
         "max_new_tokens": max_new_tokens,
         "do_sample": False,
@@ -424,8 +368,20 @@ class TensorParallelTesterMixin(ABC):
         if not is_torch_greater_or_equal("2.9"):
             self.skipTest("Tensor parallel tests require torch >= 2.9")
 
+        if not hasattr(self.model_tester, "causal_lm_class") or self.model_tester.causal_lm_class is None:
+            self.skipTest("Model tester does not have causal_lm_class (not using CausalLMModelTester)")
+
         if not self._has_tp_plan():
             self.skipTest("Model does not have a tensor parallel plan (base_model_tp_plan)")
+
+        # # Skip encoder-decoder models (TP not supported)
+        # if getattr(self, "is_encoder_decoder", False):
+        #     self.skipTest("TP tests not supported for encoder-decoder models")
+
+        # # Skip VLM models for now
+        # config = self.model_tester.get_config()
+        # if hasattr(config, "vision_config") and config.vision_config is not None:
+        #     self.skipTest("VLM models are not yet supported in TP tests")
 
         if backend_device_count(torch_device) < self.tensor_parallel_size:
             self.skipTest(
