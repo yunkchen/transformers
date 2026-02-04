@@ -2,7 +2,8 @@
 
 # Script to run tensor parallel (TP) tests for MoE models
 # Tests are run in parallel using GPU pairs (each TP test uses 2 GPUs)
-# Usage: ./run_moe_tests.sh /path/to/results
+# Usage: ./run_moe_tests.sh [/path/to/results]
+#        ./run_moe_tests.sh --report /path/to/results
 
 # Define colors for output
 GREEN='\033[0;32m'
@@ -53,6 +54,77 @@ declare -A MODELS=(
     ["solar_open"]="tests/models/solar_open/test_modeling_solar_open.py"
     ["switch_transformers"]="tests/models/switch_transformers/test_modeling_switch_transformers.py"
 )
+
+# Get model names array
+MODEL_NAMES=(${!MODELS[@]})
+
+# Report function - print summary from existing results directory
+print_report() {
+    local results_dir=$1
+    
+    if [ ! -d "$results_dir" ]; then
+        echo "Error: Results directory '$results_dir' does not exist"
+        exit 1
+    fi
+    
+    echo "=========================================="
+    echo "  MoE Models TP Test Report"
+    echo "  Results directory: $results_dir"
+    echo "=========================================="
+    echo ""
+    
+    local success_count=0
+    local fail_count=0
+    local skip_count=0
+    local missing_count=0
+    
+    for model_name in "${MODEL_NAMES[@]}"; do
+        local result_file="$results_dir/${model_name}.result"
+        if [ -f "$result_file" ]; then
+            local result=$(cat "$result_file")
+            if [[ "$result" == "SUCCESS" ]]; then
+                echo -e "${GREEN}✓ ${model_name}: ${result}${NC}"
+                ((success_count++))
+            elif [[ "$result" == "SKIPPED" ]]; then
+                echo -e "${GREY}○ ${model_name}: ${result}${NC}"
+                ((skip_count++))
+            else
+                echo -e "${RED}✗ ${model_name}: ${result}${NC}"
+                # Show last few lines of error
+                if [ -f "$results_dir/${model_name}.log" ]; then
+                    echo -e "${DIM}  Error snippet:"
+                    tail -n 5 "$results_dir/${model_name}.log" | while read -r line; do echo -e "    ${DIM}${line}${NC}"; done
+                fi
+                ((fail_count++))
+            fi
+        else
+            echo -e "${YELLOW}? ${model_name}: NOT RUN${NC}"
+            ((missing_count++))
+        fi
+    done
+    
+    echo ""
+    echo "-------------------------------------------"
+    echo -e "Total: ${GREEN}${success_count} passed${NC}, ${GREY}${skip_count} skipped${NC}, ${RED}${fail_count} failed${NC}, ${YELLOW}${missing_count} not run${NC}"
+    echo "=========================================="
+    
+    if [ $fail_count -gt 0 ]; then
+        echo ""
+        echo "Failed test logs available in: $results_dir"
+        echo "To view: cat $results_dir/<model_name>.log"
+        exit 1
+    fi
+}
+
+# Handle --report argument
+if [ "$1" == "--report" ]; then
+    if [ -z "$2" ]; then
+        echo "Usage: $0 --report /path/to/results"
+        exit 1
+    fi
+    print_report "$2"
+    exit 0
+fi
 
 # Check available GPUs and calculate parallel slots
 AVAILABLE_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
@@ -136,8 +208,7 @@ run_test() {
     fi
 }
 
-# Convert associative array keys to indexed array for scheduling
-MODEL_NAMES=(${!MODELS[@]})
+# Get number of models
 NUM_MODELS=${#MODEL_NAMES[@]}
 
 # Track PIDs for waiting
