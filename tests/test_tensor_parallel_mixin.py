@@ -465,13 +465,8 @@ class TensorParallelTesterMixin(ABC):
     # ============================================================
     def test_tp_generation_with_conversion(self):
         """Test TP generation with conversion mapping path (MoE weight fusion).
-
         Loading path: original checkpoint → conversion mapping → TP sharding → model → generate
         Applies to: MoE models (Mixtral, Qwen2-MoE, etc.) where checkpoint has unfused experts
-
-        This test creates a checkpoint in the original format (e.g., separate expert weights
-        like w1/w3/w2 for Mixtral) and verifies that loading with tp_plan="auto" correctly
-        applies the conversion mapping to fuse weights during tensor parallel loading.
         """
         self._skip_if_not_supported()
 
@@ -488,24 +483,8 @@ class TensorParallelTesterMixin(ABC):
         max_new_tokens = 10
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Create model and save in original (unfused) format using native reversal logic
-            # This simulates loading from an original checkpoint (e.g., from HuggingFace Hub)
-            from safetensors.torch import save_file
-
-            from transformers.core_model_loading import revert_weight_conversion
-
-            # Step 1: Create model with fused weights (internal representation)
             model = model_class(config)
-            # Step 2: Get the current state dict (fused format)
-            state_dict = model.state_dict()
-            # Step 3: Revert to unfused format (simulates original checkpoint format, e.g., w1/w3/w2 separate)
-            original_state_dict = revert_weight_conversion(model, state_dict)
-            # Step 4: Save checkpoint files in the original unfused format
-            save_file(original_state_dict, os.path.join(tmp_dir, "model.safetensors"))
-            model.config.save_pretrained(tmp_dir)
-
-            # Execute the distributed test: loads the unfused checkpoint with tp_plan="auto"
-            # and verifies that conversion mapping is correctly applied during TP loading
+            model.save_pretrained(tmp_dir, save_original_format=False)
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_generation_with_conversion_impl)(
                 tmp_dir, model_class, atol, rtol, max_new_tokens
             )
