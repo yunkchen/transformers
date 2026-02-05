@@ -23,8 +23,9 @@ import torch.nn as nn
 from ...backbone_utils import load_backbone
 from ...modeling_outputs import DepthEstimatorOutput
 from ...modeling_utils import PreTrainedModel
-from ...utils import auto_docstring
-from ...utils.generic import torch_int
+from ...processing_utils import Unpack
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
+from ...utils.generic import check_model_inputs, torch_int
 from .configuration_prompt_depth_anything import PromptDepthAnythingConfig
 
 

@@ -88,10 +88,6 @@ class AyaVisionMultiModalProjector(nn.Module):
 
 class AyaVisionPreTrainedModel(LlavaPreTrainedModel):
     _can_compile_fullgraph = False
-    _can_record_outputs = {
-        "hidden_states": "DecoderLayer",
-        "attentions": "Attention",
-    }
 
 
 class AyaVisionCausalLMOutputWithPast(LlavaCausalLMOutputWithPast):

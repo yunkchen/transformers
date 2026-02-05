@@ -16,8 +16,9 @@ import torch.nn as nn
 
 from ...modeling_outputs import DepthEstimatorOutput
 from ...modeling_utils import PreTrainedModel
-from ...utils import auto_docstring
-from ...utils.generic import torch_int
+from ...processing_utils import Unpack
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
+from ...utils.generic import check_model_inputs, torch_int
 from ..depth_anything.configuration_depth_anything import DepthAnythingConfig
 from ..depth_anything.modeling_depth_anything import (
     DepthAnythingDepthEstimationHead,
