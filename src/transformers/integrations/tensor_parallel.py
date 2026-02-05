@@ -401,7 +401,7 @@ def get_tensor_shard(param, empty_param, device_mesh, rank, dim, tensor_idx: int
     # actually we still shard dim=0 does not change
     # so only case is if the dim of the empty param is 3 and the shard dim is 0 -> we put the
     # tensor on a certain device (with the input tensor_index)
-    if empty_param.dim() == 3 and dim == 0 and len(param_shape) == 2:
+    if tensor_idx is not None and empty_param.dim() == 3 and dim == 0 and len(param_shape) == 2:
         # special case we don't "shard" just send this entire tensor to the correct rank.
         if start <= tensor_idx < end:
             # this tensor does need to be materialized on this device:
@@ -816,7 +816,7 @@ class PackedColwiseParallel(ColwiseParallel):
         # If only 1 dim, shard this one (usually it's a `bias`)
         dim = param.dim() if isinstance(param, torch.Tensor) else len(param.get_shape())
         if dim == 1:
-            parameter = get_tensor_shard(param, self.empty_param, self.device_mesh, self.rank, -1, tensor_idx)
+            parameter = get_tensor_shard(param, self.empty_param, self.device_mesh, self.rank, -1)
         else:
             # Check if input tensor is unpacked (shape mismatch with expected packed size)
             # This happens when using MergeModulelist + Concatenate for fused weights like gate_up_proj
@@ -827,7 +827,7 @@ class PackedColwiseParallel(ColwiseParallel):
             if actual_dim < expected_packed_dim:
                 # Input is unpacked (e.g., gate_proj that will be concatenated to gate_up_proj)
                 # Use regular tensor shard - concatenation will happen after
-                parameter = get_tensor_shard(param, self.empty_param, self.device_mesh, self.rank, -2, tensor_idx)
+                parameter = get_tensor_shard(param, self.empty_param, self.device_mesh, self.rank, -2)
             else:
                 # Input is already packed, use packed sharding
                 parameter = get_packed_weights(param, self.empty_param, self.device_mesh, self.rank, -2)
