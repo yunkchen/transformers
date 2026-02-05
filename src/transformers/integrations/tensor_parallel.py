@@ -318,7 +318,7 @@ def repack_weights(
 
 
 def get_tensor_shard(
-    param, empty_param, device_mesh, rank, dim, tensor_idx: int | None = None, expected_shape: list[int] | None = None
+    param, empty_param, device_mesh, rank, dim, tensor_idx: int | None = None
 ):
     """
     Generalized tensor sharding across a multi-dimensional device mesh.
@@ -370,28 +370,22 @@ def get_tensor_shard(
         device_mesh (torch.Tensor): Shape [d_0, ..., d_n] representing the mesh.
         rank (int): Global rank of the current process/device.
         dim (int): Dimension along which to shard the tensor.
-        expected_shape (list[int] | None): The expected shape of the tensor after sharding.
     """
     param_dim = empty_param.ndim
-    # Flatten the mesh to get the total number of devices
     mesh_shape = device_mesh.shape
     world_size = reduce(operator.mul, mesh_shape)
     # Get param shape: works for both torch.Tensor and safetensors TensorInfo
     param_shape = list(param.shape) if isinstance(param, torch.Tensor) else param.get_shape()
-    if expected_shape is None:
-        expected_shape = empty_param.shape
     if dim < 0:
         dim = param_dim + dim
     if empty_param.dim() == 3 and dim == 1 and len(param_shape) == 2:
         dim = 0
-        expected_shape = expected_shape[1:]
     elif empty_param.dim() == 3 and dim == 2 and len(param_shape) == 2:
         dim = 0
-        expected_shape = expected_shape[1:]
 
-    shard_size = math.ceil(expected_shape[dim] / world_size)
+    shard_size = math.ceil(param_shape[dim] / world_size)
     start = rank * shard_size
-    end = min(start + shard_size, expected_shape[dim])
+    end = min(start + shard_size, param_shape[dim])
 
     if dim >= param_dim:
         raise ValueError(f"dim {dim} is out of bounds for tensor of dimension {param_dim}")
@@ -828,7 +822,7 @@ class PackedColwiseParallel(ColwiseParallel):
                 # Input is unpacked (e.g., gate_proj that will be concatenated to gate_up_proj)
                 # Use regular tensor shard - concatenation will happen after
                 parameter = get_tensor_shard(
-                    param, self.empty_param, self.device_mesh, self.rank, -2, expected_shape=expected_shape
+                    param, self.empty_param, self.device_mesh, self.rank, -2
                 )
             else:
                 # Input is already packed, use packed sharding
