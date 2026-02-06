@@ -125,7 +125,7 @@ class ContinuousBatchProcessor:
         # Cuda graphs for the generation step
         self.q_padding_intervals = q_padding_intervals
         self.kv_padding_intervals = kv_padding_intervals
-        self._graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] | None = {} if use_cuda_graph else None
+        self.use_cuda_graph = use_cuda_graph
         # Compile-related arguments
         self.compile_config: CompileConfig | None = getattr(generation_config, "compile_config", None)
         self._forward_process_and_sample_is_compiled = False
@@ -376,12 +376,12 @@ class ContinuousBatchProcessor:
         batch_data = self.inputs_and_outputs.get_model_kwargs(padded_q, padded_read_index_size)
 
         # If we are not using cuda graphs, we perform the generation step and return
-        if self._graphs is None:
+        if not self.use_cuda_graph:
             self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
             return None
 
         # If we have a graph that fits, we replay it
-        graph = self._graphs.get((padded_q, padded_read_index_size))
+        graph = self.inputs_and_outputs.graphs.get((padded_q, padded_read_index_size))
         if graph is not None:
             graph.replay()
             return None
@@ -398,7 +398,7 @@ class ContinuousBatchProcessor:
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, stream=stream):
             self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
-        self._graphs[(padded_q, padded_read_index_size)] = graph
+        self.inputs_and_outputs.graphs[(padded_q, padded_read_index_size)] = graph
 
     @traced
     def _forward_process_and_sample(

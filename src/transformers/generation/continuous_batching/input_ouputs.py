@@ -99,13 +99,15 @@ class ContinuousBatchingIOs:
         self.config = config
         self.model_dtype = model_dtype
         self.sliding_window = 1 if getattr(config, "sliding_window", None) is None else config.sliding_window
-        # Setup accumulators
-        self.requests_in_batch: list[FutureRequestState] = []
+        # Setup input-related accumulators
         self.actual_query_length = 0
         self.actual_key_length = 0
         self.actual_batch_size = 0
         self.actual_read_sizes = [0 for _ in range(cache.num_groups)]
         self.actual_write_sizes = [0 for _ in range(cache.num_groups)]
+        # Setup other accumulators
+        self.requests_in_batch: list[FutureRequestState] = []
+        self.graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
         # Setup static tensors
         self._setup_static_tensors()
         self._reset_static_tensors(full_reset=True)
