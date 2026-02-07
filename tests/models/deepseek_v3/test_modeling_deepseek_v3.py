@@ -83,7 +83,10 @@ class DeepseekV3ModelTester:
         hidden_act="silu",
         max_position_embeddings=512,
         initializer_range=0.02,
-        attention_probs_dropout_prob=0.1,
+        # NOTE(3outeille): must be 0.0 for TP backward tests. In train mode, non-zero dropout causes
+        # different RNG states between the non-TP and TP model forward passes (they run sequentially),
+        # leading to different dropout masks and mismatched losses.
+        attention_probs_dropout_prob=0.0,
         type_vocab_size=16,
         type_sequence_label_size=2,
         num_labels=3,
