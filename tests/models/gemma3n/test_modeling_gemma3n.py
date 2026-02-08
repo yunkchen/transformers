@@ -271,7 +271,7 @@ class Gemma3nTextModelTester(CausalLMModelTester):
         num_attention_heads=2,
         num_key_value_heads=2,
         altup_num_inputs=2,
-        intermediate_size=21,
+        intermediate_size=22,
         hidden_activation="gelu_pytorch_tanh",
         max_position_embeddings=512,
         type_vocab_size=16,
@@ -315,6 +315,10 @@ class Gemma3nTextModelTester(CausalLMModelTester):
         self.eos_token_id = eos_token_id
         self.head_dim = self.hidden_size // self.num_attention_heads
         self.is_decoder = is_decoder
+        # NOTE(3outeille): must be 0.0 for TP backward tests. In train mode, non-zero dropout causes
+        # different RNG states between the non-TP and TP model forward passes (they run sequentially),
+        # leading to different dropout masks and mismatched losses.
+        self.attention_probs_dropout_prob = 0.0
 
 
 @require_torch
