@@ -20,6 +20,7 @@ from transformers.conversion_mapping import _MODEL_TO_CONVERSION_PATTERN
 from transformers.integrations.tensor_parallel import _get_parameter_tp_plan
 from transformers.testing_utils import (
     backend_device_count,
+    is_tensor_parallel_test,
     is_torch_available,
     torch_device,
 )
@@ -394,6 +395,7 @@ class TensorParallelTesterMixin(ABC):
     # ============================================================
     # Public test methods - PATH A: Direct Load (Dense models)
     # ============================================================
+    @is_tensor_parallel_test
     def test_tp_forward_direct(self):
         """Test TP forward pass with direct load path (no conversion mapping).
 
@@ -415,6 +417,7 @@ class TensorParallelTesterMixin(ABC):
 
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_forward_impl)(tmp_dir, model_class, atol, rtol)
 
+    @is_tensor_parallel_test
     def test_tp_backward_direct(self):
         """Test TP backward pass with direct load path (no conversion mapping).
 
@@ -436,6 +439,7 @@ class TensorParallelTesterMixin(ABC):
 
             _init_distributed(tp=self.tensor_parallel_size)(_test_tp_backward_impl)(tmp_dir, model_class, atol, rtol)
 
+    @is_tensor_parallel_test
     def test_tp_generation_direct(self):
         """Test TP generation with direct load path (no conversion mapping).
 
@@ -461,6 +465,7 @@ class TensorParallelTesterMixin(ABC):
     # ============================================================
     # Public test methods - PATH B: Conversion + Load (MoE models)
     # ============================================================
+    @is_tensor_parallel_test
     def test_tp_generation_with_conversion(self):
         """Test TP generation with conversion mapping path (MoE weight fusion).
         Loading path: original checkpoint → conversion mapping → TP sharding → model → generate
