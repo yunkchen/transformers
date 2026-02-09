@@ -379,12 +379,11 @@ class ContinuousBatchProcessor:
         batch_data = self.inputs_and_outputs.get_model_kwargs(padded_q, padded_read_index_size)
         compute_stream = self.inputs_and_outputs.compute_stream
 
-        # Print input ids # TODO: BUG: remove this
-        print(batch_data["input_ids"].tolist())
 
         # If we are not using cuda graphs, we perform the generation step and return
         if not self.use_cuda_graph:
-            self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
+            with torch.cuda.stream(compute_stream):
+                self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
 
         # Otherwise, we use create or replay the graph
         else:
@@ -398,12 +397,12 @@ class ContinuousBatchProcessor:
                 compute_stream.wait_stream(torch.cuda.current_stream())
                 # Warmup
                 with torch.cuda.stream(compute_stream):
-                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
+                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
                 torch.cuda.current_stream().wait_stream(compute_stream)
                 # Catpure
                 graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(graph, stream=compute_stream):
-                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample, None)
+                    self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
                 # Store
                 self.inputs_and_outputs.graphs[(padded_q, padded_read_index_size)] = graph
 
@@ -417,16 +416,14 @@ class ContinuousBatchProcessor:
         batch_data: dict,
         logit_processor: LogitsProcessorList,
         do_sample: bool,
-        transfer_ids: torch.Tensor | None,
     ) -> None:
         """This function performs the forward pass, logits processing, and sampling; which are broken down into smaller
         function to be easier to trace with OpenTelemetry."""
+        self.inputs_and_outputs.carry_over_tokens(batch_data["input_ids"])
         logits = self._model_forward(model, batch_data)
         # if self.log_prob_generation:    batch_processor.output_probs.copy_(logits)  # TODO
         probs = self._process_logit(batch_data, logits, logit_processor)
         self._sample(probs, batch_data, do_sample)
-        if transfer_ids is not None:
-            pass # TODO: BUG: implement this
 
     @traced(span_name="model_forward")
     def _model_forward(self, model: nn.Module, batch_data: dict) -> torch.Tensor:

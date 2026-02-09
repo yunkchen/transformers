@@ -107,6 +107,7 @@ class ContinuousBatchingIOs:
         self.actual_write_sizes = [0 for _ in range(cache.num_groups)]
         # Setup other accumulators
         self.requests_in_batch: list[FutureRequestState] = []
+        self.req_id_to_new_token_position: dict[str, int] = {}  # only used for async API
         self.graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
         # Setup static tensors
         self._setup_static_tensors()
@@ -243,6 +244,9 @@ class ContinuousBatchingIOs:
     def compute_stream(self) -> torch.cuda.Stream:
         return torch.cuda.current_stream()
 
+    def carry_over_tokens(self, input_ids: torch.Tensor) -> None:
+        pass
+
     def retrieve_device_outputs(self) -> None:
         pass  # serves no purpose for the sync API
 
@@ -271,12 +275,13 @@ class ContinuousBatchingIOs:
         # Reset the static tensors used for storage
         self._reset_static_tensors()  # FIXME: why does this make the generation faster?
         # Reset accumulators
-        self.requests_in_batch = []
         self.actual_query_length = 0
         self.actual_key_length = 0
         self.actual_batch_size = 0
         self.actual_read_sizes = [0 for _ in range(self.cache.num_groups)]
         self.actual_write_sizes = [0 for _ in range(self.cache.num_groups)]
+        self.requests_in_batch = []
+        self.req_id_to_new_token_position = {}
 
         # Prepare accumulators
         input_ids = []
@@ -323,6 +328,7 @@ class ContinuousBatchingIOs:
             if future_state.has_new_token:
                 logits_indices.append(cumulative_seqlens_q[-1] - 1)
                 state.generated_tokens.append(TMP_TOKEN_ID)
+                self.req_id_to_new_token_position[state.request_id] = logits_indices[-1]
 
             self.requests_in_batch.append(future_state)
 
@@ -472,6 +478,8 @@ class ContinuousBatchingAsyncIOs:
         self.h2d_stream = torch.cuda.Stream(device=device)
         self.d2h_stream = torch.cuda.Stream(device=device)
         self.compute_stream = torch.cuda.Stream(device=device)
+        # Used in carry over ids computation
+        self.max_batch_tokens = cache.max_batch_tokens
 
     # These methods are simple wrapper dispatching to the current IO pair
     def get_cumulative_seqlens(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -486,6 +494,16 @@ class ContinuousBatchingAsyncIOs:
         io_pair.host_io.prepare_batch_tensors(requests_in_batch)
         io_pair.host_io.carry_over_ids.copy_(self.infer_carry_over_ids())
 
+    def infer_carry_over_ids(self) -> torch.Tensor:
+        next_req_id_to_new_token_position = self.io_pairs[self.current_pair].host_io.req_id_to_new_token_position
+        prev_req_id_to_new_token_position = self.io_pairs[1 - self.current_pair].host_io.req_id_to_new_token_position
+        carry_over_ids = [-1 for _ in range(self.max_batch_tokens)]
+        for request_id, new_token_position in next_req_id_to_new_token_position.items():
+            src_position = prev_req_id_to_new_token_position.get(request_id)
+            if src_position is not None:
+                carry_over_ids[new_token_position] = src_position
+        return torch.tensor(carry_over_ids, dtype=torch.int32)
+
     # The get_model_kwargs method is where the H2D transfer happens
     def get_model_kwargs(self, padded_q_size: int = 0, padded_kv_cache_size: int = 0) -> dict[str, Any]:
         io_pair = self.io_pairs[self.current_pair]
@@ -493,6 +511,13 @@ class ContinuousBatchingAsyncIOs:
         self.h2d_stream.record_event(io_pair.h2d_over)
         self.compute_stream.wait_event(io_pair.h2d_over)
         return io_pair.device_io.get_model_kwargs(padded_q_size, padded_kv_cache_size)
+
+    def carry_over_tokens(self, input_ids: torch.Tensor) -> None:
+        prev_output_ids = self.io_pairs[1 - self.current_pair].device_io.output_ids
+        carry_over_ids = self.io_pairs[self.current_pair].device_io.carry_over_ids
+        carried_tokens = prev_output_ids[carry_over_ids]
+        mask = (carried_tokens != -1)
+        input_ids[0, mask] = carried_tokens[mask]
 
     # This is called during compute, so we always pick the device IO in the IO pair
     @property
