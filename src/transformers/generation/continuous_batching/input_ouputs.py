@@ -447,12 +447,10 @@ class HostDeviceIOPair:
 
     def transfer_inputs_h2d(self, stream: torch.cuda.Stream) -> None:
         self.host_io._transfer_inputs(self.device_io, stream=stream, non_blocking=True)
-        self.h2d_over.record(stream=stream)
 
     def transfer_outputs_d2h(self, stream: torch.cuda.Stream) -> None:
         with torch.cuda.stream(stream):
             self.host_io.output_ids.copy_(self.device_io.output_ids, non_blocking=True)
-        self.d2h_over.record(stream=stream)
 
 class ContinuousBatchingAsyncIOs:
     """To be compatible with the synchronous API, this class implements the following:
@@ -517,11 +515,18 @@ class ContinuousBatchingAsyncIOs:
         return io_pair.device_io.get_model_kwargs(padded_q_size, padded_kv_cache_size)
 
     def carry_over_tokens(self, input_ids: torch.Tensor) -> None:
+        # Retrieve previous batch output ids
         prev_output_ids = self.io_pairs[1 - self.current_pair].device_io.output_ids
+        # Retrieve the carry over ids and mask
         carry_over_ids = self.io_pairs[self.current_pair].device_io.carry_over_ids
-        carried_tokens = prev_output_ids[carry_over_ids]
-        carried_tokens = carried_tokens[:input_ids.size(1)]
-        input_ids[0] += carried_tokens
+        # Compute tokens to carry over and the corresponding mask
+        carried_over_ids = prev_output_ids[carry_over_ids]
+        carried_over_mask = (carry_over_ids != -1).int()
+        # Truncate everything to the right size
+        carried_over_ids = carried_over_ids[:input_ids.size(1)]
+        carried_over_mask = carried_over_mask[:input_ids.size(1)]
+        # Perform the carry over
+        input_ids[0] = carried_over_ids * carried_over_mask + input_ids[0] * (1 - carried_over_mask)
 
     # This is called during compute, so we always pick the device IO in the IO pair
     @property
@@ -536,9 +541,13 @@ class ContinuousBatchingAsyncIOs:
     # The retrieve_device_outputs method is where the D2H transfer happens AND where we switch IO pair
     def retrieve_device_outputs(self) -> None:
         io_pair = self.io_pairs[self.current_pair]
+        # Wait for compute to finish before starting D2H transfer
         self.compute_stream.record_event(io_pair.compute_over)
+        self.d2h_stream.wait_event(io_pair.compute_over)
+        # Transfer the outputs to the host
         io_pair.transfer_outputs_d2h(self.d2h_stream)
         self.d2h_stream.record_event(io_pair.d2h_over)
+        # Switch IO pair
         self.current_pair = 1 - self.current_pair
 
     # This method is called after the switch and not during the first batch
