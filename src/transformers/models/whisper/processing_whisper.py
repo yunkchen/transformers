@@ -15,7 +15,7 @@
 Speech processor class for Whisper
 """
 
-from ...processing_utils import ProcessorMixin, ProcessingKwargs
+from ...processing_utils import ProcessorMixin
 from ...utils import auto_docstring
 
 
