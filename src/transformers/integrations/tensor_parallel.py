@@ -731,6 +731,7 @@ class ColwiseParallel(TensorParallelLayer):
         shape[dim] = end - start
         return tuple(shape)
 
+
 class ReplicatedWithGradAllReduce(TensorParallelLayer):
     """
     Replicated parameter with gradient all-reduce.
