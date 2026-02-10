@@ -460,6 +460,7 @@ class _AllReduceBackward(torch.autograd.Function):
         device_mesh = ctx.device_mesh
         if device_mesh.size() == 1:
             return grad_output, None
+        grad_output = grad_output.contiguous()
         dist.all_reduce(grad_output, op=dist.ReduceOp.SUM, group=device_mesh.get_group())
         return grad_output, None
 
@@ -666,7 +667,7 @@ class TensorParallelLayer:
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def prepare_module_tp(self, module: nn.Module, device_mesh) -> nn.Module:
+    def prepare_module_tp(self, module: nn.Module, device_mesh, **kwargs) -> nn.Module:
         distribute_module(
             module,
             device_mesh,
@@ -753,7 +754,7 @@ class ReplicatedWithGradAllReduce(TensorParallelLayer):
     def shard_tensor(self, param, tensor_idx=None, device=None, dtype=None):
         return param[...].to(device=device, dtype=dtype)
 
-    def prepare_module_tp(self, module, device_mesh):
+    def prepare_module_tp(self, module, device_mesh, **kwargs):
         # Use a module-level backward hook (not param.register_hook) because parameters are replaced during weight loading after this method runs.
         # Module hooks survive parameter replacement.
         def _backward_hook(mod, grad_input, grad_output, mesh=device_mesh):
@@ -762,6 +763,28 @@ class ReplicatedWithGradAllReduce(TensorParallelLayer):
                     _all_reduce_gradient(param.grad, mesh)
 
         module.register_full_backward_hook(_backward_hook)
+
+
+class MlaKvAProjParallel(TensorParallelLayer):
+    """
+    For MLA attention: kv_a_proj_with_mqa output is [kv_lora_rank + qk_rope_head_dim].
+    The rope portion bypasses kv_b_proj (colwise), so needs all_reduce_backward
+    to fix its gradient in TP mode. This layer is replicated (not sharded).
+    """
+
+    def _prepare_output_fn(self, mod, output, device_mesh):
+        rope_dim = mod._rope_dim
+        pass_output, rope_output = output.split([output.shape[-1] - rope_dim, rope_dim], dim=-1)
+        rope_output = all_reduce_backward(rope_output, device_mesh)
+        return torch.cat([pass_output, rope_output], dim=-1)
+
+    def shard_tensor(self, param, tensor_idx=None, device=None, dtype=None):
+        return param[...].to(device=device, dtype=dtype)
+
+    def prepare_module_tp(self, module, device_mesh, model=None, **kwargs):
+        if model is not None and hasattr(model.config, "qk_rope_head_dim"):
+            module._rope_dim = model.config.qk_rope_head_dim
+        distribute_module(module, device_mesh, output_fn=self._prepare_output_fn)
 
 
 class RowwiseParallel(TensorParallelLayer):
@@ -1144,6 +1167,7 @@ class ParallelInterface(GeneralInterface):
             "ep_router": RouterParallel(),
             "moe_tp_experts": MoeTensorParalellExperts(),
             "replicated_with_grad_allreduce": ReplicatedWithGradAllReduce(),
+            "mla_kv_a_proj": MlaKvAProjParallel(),
         }
         if is_torch_available() and _torch_distributed_available
         else {}
@@ -1162,6 +1186,7 @@ class ParallelInterface(GeneralInterface):
         "embedding_rowwise": 0,
         "sequence_parallel": None,
         "replicated_with_grad_allreduce": None,
+        "mla_kv_a_proj": None,
     }
 
     # Bias sharding: colwise shards bias, rowwise doesn't (bias is replicated and all-reduced)
@@ -1175,6 +1200,7 @@ class ParallelInterface(GeneralInterface):
         "embedding_rowwise": None,
         "sequence_parallel": None,
         "replicated_with_grad_allreduce": None,
+        "mla_kv_a_proj": None,
     }
 
 
@@ -1297,7 +1323,7 @@ def add_tensor_parallel_hooks_to_module(
     if current_module_plan is not None:
         tp_layer = ALL_PARALLEL_STYLES[current_module_plan]
         try:
-            tp_layer.prepare_module_tp(module, device_mesh)
+            tp_layer.prepare_module_tp(module, device_mesh, model=model)
         except NotImplementedError as e:
             print(
                 f"Trying to prepare {layer_name}, but it's not supported. Corresponding module: {module} Fix it's TP plan: {e}"
