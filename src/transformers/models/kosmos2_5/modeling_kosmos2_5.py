@@ -1180,6 +1180,11 @@ class Kosmos2_5Model(Kosmos2_5PreTrainedModel):
 
     def __init__(self, config: Kosmos2_5Config):
         super().__init__(config)
+        # TODO To remove - hack needed due to kosmos2.5 peculiar structure
+        config.text_config.output_hidden_states = config.output_hidden_states
+        config.text_config.output_attentions = config.output_attentions
+        config.vision_config.output_hidden_states = config.output_hidden_states
+        config.vision_config.output_attentions = config.output_attentions
 
         self.text_model = Kosmos2_5TextModel._from_config(config.text_config)
         self.vision_model = Kosmos2_5VisionModel._from_config(config.vision_config)
@@ -1296,22 +1301,22 @@ class Kosmos2_5Model(Kosmos2_5PreTrainedModel):
 class Kosmos2_5TextForCausalLM(Kosmos2_5PreTrainedModel, GenerationMixin):
     config_class = Kosmos2_5TextConfig
     input_modalities = ("text",)
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _tied_weights_keys = {"lm_head.weight": "model.model.embed_tokens.weight"}
 
     def __init__(self, config: Kosmos2_5TextConfig):
         super().__init__(config)
 
-        self.model = Kosmos2_5TextTransformer(config)
+        self.model = Kosmos2_5TextModel._from_config(config)
         self.lm_head = nn.Linear(in_features=config.embed_dim, out_features=config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Module:
-        return self.model.embed_tokens
+        return self.model.get_input_embeddings()
 
     def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
+        self.model.set_input_embeddings(value)
 
     def get_output_embeddings(self) -> nn.Module:
         return self.lm_head
@@ -1319,7 +1324,6 @@ class Kosmos2_5TextForCausalLM(Kosmos2_5PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
 
-    @check_model_inputs
     @add_start_docstrings_to_model_forward(KOSMOS2_5_TEXT_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithCrossAttentions, config_class=Kosmos2_5TextConfig)
     def forward(
@@ -1458,10 +1462,10 @@ class Kosmos2_5ForConditionalGeneration(Kosmos2_5PreTrainedModel, GenerationMixi
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Module:
-        return self.text_model.model.embed_tokens
+        return self.text_model.get_input_embeddings()
 
     def set_input_embeddings(self, value):
-        self.text_model.model.embed_tokens = value
+        self.text_model.set_input_embeddings(value)
 
     def get_output_embeddings(self) -> nn.Module:
         return self.text_model.get_output_embeddings()
