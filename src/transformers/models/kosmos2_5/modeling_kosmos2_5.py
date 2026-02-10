@@ -1180,7 +1180,7 @@ class Kosmos2_5Model(Kosmos2_5PreTrainedModel):
 
     def __init__(self, config: Kosmos2_5Config):
         super().__init__(config)
-        # TODO To remove - hack needed due to kosmos2.5 peculiar structure
+        # TODO To remove - hack used due to kosmos2.5 peculiar structure
         config.text_config.output_hidden_states = config.output_hidden_states
         config.text_config.output_attentions = config.output_attentions
         config.vision_config.output_hidden_states = config.output_hidden_states

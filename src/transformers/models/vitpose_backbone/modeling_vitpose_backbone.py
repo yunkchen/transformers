@@ -328,17 +328,15 @@ class VitPoseBackboneEncoder(nn.Module):
         self,
         hidden_states: torch.Tensor,
         dataset_index: torch.Tensor | None = None,
-        output_hidden_states: bool | None = None,
     ) -> BaseModelOutput:
-        all_hidden_states = [hidden_states] if output_hidden_states else None
+        all_hidden_states = [hidden_states]
         for i, layer_module in enumerate(self.layer):
             hidden_states = layer_module(hidden_states, dataset_index)
-            if all_hidden_states is not None:
-                all_hidden_states.append(hidden_states)
+            all_hidden_states.append(hidden_states)
 
         return BaseModelOutput(
             last_hidden_state=hidden_states,
-            hidden_states=tuple(all_hidden_states) if all_hidden_states else None,
+            hidden_states=tuple(all_hidden_states),
         )
 
 
@@ -353,6 +351,7 @@ class VitPoseBackbonePreTrainedModel(PreTrainedModel):
     _supports_sdpa = True
     _supports_flash_attn = True
     _can_record_outputs = {
+        "hidden_states": VitPoseBackboneLayer,
         "attentions": VitPoseBackboneSelfAttention,
     }
 
@@ -394,8 +393,7 @@ class VitPoseBackbone(BackboneMixin, VitPoseBackbonePreTrainedModel):
         self,
         pixel_values: torch.Tensor,
         dataset_index: torch.Tensor | None = None,
-        output_hidden_states: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         r"""
         dataset_index (`torch.Tensor` of shape `(batch_size,)`):
@@ -417,13 +415,8 @@ class VitPoseBackbone(BackboneMixin, VitPoseBackbonePreTrainedModel):
         >>> outputs = model(pixel_values, dataset_index)
         ```"""
 
-        if output_hidden_states is None:
-            output_hidden_states = self.config.output_hidden_states
-
         embedding_output = self.embeddings(pixel_values)
-        outputs: BaseModelOutput = self.encoder(
-            embedding_output, dataset_index=dataset_index, output_hidden_states=True
-        )
+        outputs: BaseModelOutput = self.encoder(embedding_output, dataset_index=dataset_index)
         hidden_states = outputs.hidden_states
 
         feature_maps = []
@@ -434,7 +427,7 @@ class VitPoseBackbone(BackboneMixin, VitPoseBackbonePreTrainedModel):
 
         return BackboneOutput(
             feature_maps=tuple(feature_maps),
-            hidden_states=outputs.hidden_states if output_hidden_states else None,
+            hidden_states=None,
         )
 
 

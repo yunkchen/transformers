@@ -20,7 +20,7 @@ import unittest
 import numpy as np
 
 from transformers import DiaFeatureExtractor
-from transformers.testing_utils import require_torch
+from transformers.testing_utils import require_numba, require_torch
 from transformers.utils.import_utils import is_torch_available
 
 from ...test_sequence_feature_extraction_common import SequenceFeatureExtractionTestMixin
@@ -150,6 +150,7 @@ class DiaFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Test
         return [x["array"] for x in audio_samples]
 
     # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_integration with Dac->Dia
+    @require_numba
     def test_integration(self):
         # fmt: off
         EXPECTED_INPUT_VALUES = torch.tensor(
@@ -171,6 +172,7 @@ class DiaFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Test
         audio_input_end = torch.tensor(input_audio[0][-30:], dtype=torch.float32)
         torch.testing.assert_close(input_values[0, 0, -46:-16], audio_input_end, rtol=1e-4, atol=1e-4)
 
+    @require_numba
     def test_integration_stereo(self):
         # fmt: off
         EXPECTED_INPUT_VALUES = torch.tensor(
@@ -190,6 +192,7 @@ class DiaFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Test
         torch.testing.assert_close(input_values[0, 0, :30], EXPECTED_INPUT_VALUES, rtol=1e-4, atol=1e-4)
 
     # Copied from tests.models.dac.test_feature_extraction_dac.DacFeatureExtractionTest.test_truncation_and_padding with Dac->Dia
+    @require_numba
     def test_truncation_and_padding(self):
         input_audio = self._load_datasamples(2)
         # would be easier if the stride was like

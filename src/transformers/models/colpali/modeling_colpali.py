@@ -135,9 +135,7 @@ class ColPaliForRetrieval(ColPaliPreTrainedModel):
     ) -> ColPaliForRetrievalOutput:
         if pixel_values is not None:
             pixel_values = pixel_values.to(dtype=self.dtype)
-        # TODO decorator refactor
-
-        output_hidden_states = kwargs.get("output_hidden_states")
+        output_hidden_states = kwargs.pop("output_hidden_states", None)
         if output_hidden_states is None:
             output_hidden_states = self.config.output_hidden_states
 
@@ -146,7 +144,6 @@ class ColPaliForRetrieval(ColPaliPreTrainedModel):
             attention_mask=attention_mask,
             pixel_values=pixel_values,
             output_hidden_states=True,
-            return_dict=True,
             **kwargs,
         )
         vlm_hidden_states = vlm_output.hidden_states if output_hidden_states else None

@@ -673,8 +673,7 @@ class VJEPA2PoolerSelfAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        output_attentions: bool | None = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Input shape: Batch x Time x Channel"""
 
         batch_size, seq_length, embed_dim = hidden_states.shape
@@ -704,9 +703,6 @@ class VJEPA2PoolerSelfAttention(nn.Module):
 
         attn_output = attn_output.reshape(batch_size, seq_length, embed_dim).contiguous()
         attn_output = self.out_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
 
         return attn_output, attn_weights
 
@@ -741,8 +737,7 @@ class VJEPA2PoolerCrossAttention(nn.Module):
         keys: torch.Tensor,
         values: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        output_attentions: bool | None = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Input shape: Batch x Time x Channel"""
 
         batch_size, q_seq_length, embed_dim = queries.shape
@@ -773,9 +768,6 @@ class VJEPA2PoolerCrossAttention(nn.Module):
 
         attn_output = attn_output.reshape(batch_size, q_seq_length, embed_dim).contiguous()
 
-        if not output_attentions:
-            attn_weights = None
-
         return attn_output, attn_weights
 
 
@@ -792,24 +784,19 @@ class VJEPA2PoolerSelfAttentionLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
-        output_attentions: bool | None = False,
-    ) -> tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             hidden_states (`torch.FloatTensor`):
                 Input to the layer of shape `(batch, seq_len, embed_dim)`.
             attention_mask (`torch.FloatTensor`):
                 Attention mask of shape `(batch, 1, q_len, k_v_seq_len)` where padding elements are indicated by very large negative values.
-            output_attentions (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
         """
         residual = hidden_states
         hidden_states = self.layer_norm1(hidden_states)
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
         )
         hidden_states = residual + hidden_states
 
@@ -818,12 +805,7 @@ class VJEPA2PoolerSelfAttentionLayer(GradientCheckpointingLayer):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (attn_weights,)
-
-        return outputs
+        return hidden_states, attn_weights
 
 
 class VJEPA2PoolerCrossAttentionLayer(GradientCheckpointingLayer):
@@ -839,8 +821,7 @@ class VJEPA2PoolerCrossAttentionLayer(GradientCheckpointingLayer):
         queries: torch.Tensor,
         hidden_state: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        output_attentions: bool = False,
-    ) -> tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Apply cross-attention
         residual = queries
         hidden_state = self.layer_norm1(hidden_state)
@@ -849,7 +830,6 @@ class VJEPA2PoolerCrossAttentionLayer(GradientCheckpointingLayer):
             hidden_state,
             hidden_state,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
         )
         hidden_state = residual + hidden_state
 
@@ -859,11 +839,7 @@ class VJEPA2PoolerCrossAttentionLayer(GradientCheckpointingLayer):
         hidden_state = self.mlp(hidden_state)
         hidden_state = residual + hidden_state
 
-        outputs = (hidden_state,)
-        if output_attentions:
-            outputs += tuple(attn_weights)
-
-        return outputs
+        return hidden_state, *attn_weights
 
 
 class VJEPA2AttentivePooler(nn.Module):
