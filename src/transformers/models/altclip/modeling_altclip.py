@@ -33,7 +33,7 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging, torch_int
-from ...utils.generic import check_model_inputs, is_flash_attention_requested
+from ...utils.generic import check_model_inputs
 from .configuration_altclip import AltCLIPConfig, AltCLIPTextConfig, AltCLIPVisionConfig
 
 
@@ -461,7 +461,6 @@ class AltCLIPAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        causal_attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Input shape: Batch x Time x Channel"""
@@ -475,15 +474,6 @@ class AltCLIPAttention(nn.Module):
         queries = queries.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
         keys = keys.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
         values = values.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
-        # CLIP text model uses both `causal_attention_mask` and `attention_mask`
-        # in case FA2 kernel is called, `is_causal` should be inferred from `causal_attention_mask`
-        if not is_flash_attention_requested(self.config):
-            if attention_mask is not None and causal_attention_mask is not None:
-                attention_mask = attention_mask + causal_attention_mask
-            elif causal_attention_mask is not None:
-                attention_mask = causal_attention_mask
-        else:
-            self.is_causal = causal_attention_mask is not None
 
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation, eager_attention_forward
@@ -495,7 +485,6 @@ class AltCLIPAttention(nn.Module):
             keys,
             values,
             attention_mask,
-            is_causal=self.is_causal,
             scaling=self.scale,
             dropout=0.0 if not self.training else self.dropout,
             **kwargs,
@@ -535,7 +524,6 @@ class AltCLIPEncoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
-        causal_attention_mask: torch.Tensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor, torch.Tensor | None]:
         residual = hidden_states
@@ -544,7 +532,6 @@ class AltCLIPEncoderLayer(GradientCheckpointingLayer):
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            causal_attention_mask=causal_attention_mask,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -576,7 +563,6 @@ class AltCLIPEncoder(nn.Module):
         self,
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
-        causal_attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         r"""
@@ -592,20 +578,13 @@ class AltCLIPEncoder(nn.Module):
                 - 0 for tokens that are **masked**.
 
                 [What are attention masks?](../glossary#attention-mask)
-            causal_attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Causal mask for the text model. Mask values selected in `[0, 1]`:
 
-                - 1 for tokens that are **not masked**,
-                - 0 for tokens that are **masked**.
-
-                [What are attention masks?](../glossary#attention-mask)
         """
         hidden_states = inputs_embeds
         for idx, encoder_layer in enumerate(self.layers):
             layer_outputs = encoder_layer(
                 hidden_states,
                 attention_mask,
-                causal_attention_mask,
                 **kwargs,
             )
 

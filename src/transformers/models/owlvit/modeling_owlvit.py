@@ -21,7 +21,7 @@ from torch import Tensor, nn
 
 from ... import initialization as init
 from ...activations import ACT2FN
-from ...modeling_attn_mask_utils import _create_4d_causal_attention_mask, _prepare_4d_attention_mask
+from ...masking_utils import create_causal_mask
 from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from ...modeling_utils import PreTrainedModel
@@ -402,7 +402,6 @@ class OwlViTAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        causal_attention_mask: torch.Tensor | None = None,
         output_attentions: bool | None = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
@@ -429,16 +428,6 @@ class OwlViTAttention(nn.Module):
                 f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
                 f" {attn_weights.size()}"
             )
-
-        # apply the causal_attention_mask first
-        if causal_attention_mask is not None:
-            if causal_attention_mask.size() != (bsz, 1, tgt_len, src_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is"
-                    f" {causal_attention_mask.size()}"
-                )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + causal_attention_mask
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         if attention_mask is not None:
             if attention_mask.size() != (bsz, 1, tgt_len, src_len):
@@ -512,7 +501,6 @@ class OwlViTEncoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
-        causal_attention_mask: torch.Tensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor, torch.Tensor | None]:
         residual = hidden_states
@@ -521,7 +509,6 @@ class OwlViTEncoderLayer(GradientCheckpointingLayer):
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            causal_attention_mask=causal_attention_mask,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -606,21 +593,16 @@ class OwlViTEncoder(nn.Module):
         self,
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
-        causal_attention_mask: torch.Tensor | None = None,
         output_attentions: bool | None = None,
         output_hidden_states: bool | None = None,
         return_dict: bool | None = None,
+        **kwargs,
     ) -> tuple | BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`).
             attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-                - 1 for tokens that are **not masked**,
-                - 0 for tokens that are **masked**.
-                [What are attention masks?](../glossary#attention-mask)
-            causal_attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Causal mask for the text model. Mask values selected in `[0, 1]`:
                 - 1 for tokens that are **not masked**,
                 - 0 for tokens that are **masked**.
                 [What are attention masks?](../glossary#attention-mask)
@@ -649,8 +631,8 @@ class OwlViTEncoder(nn.Module):
             layer_outputs = encoder_layer(
                 hidden_states,
                 attention_mask,
-                causal_attention_mask,
                 output_attentions=output_attentions,
+                **kwargs,
             )
 
             hidden_states = layer_outputs[0]
@@ -668,14 +650,17 @@ class OwlViTEncoder(nn.Module):
         )
 
 
-class OwlViTTextTransformer(nn.Module):
+class OwlViTTextTransformer(OwlViTPreTrainedModel):
     def __init__(self, config: OwlViTTextConfig):
-        super().__init__()
-        self.config = config
+        super().__init__(config)
+
         embed_dim = config.hidden_size
         self.embeddings = OwlViTTextEmbeddings(config)
         self.encoder = OwlViTEncoder(config)
         self.final_layer_norm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
+
+        # Initialize weights and apply final processing
+        self.post_init()
 
     @auto_docstring
     def forward(
@@ -686,6 +671,7 @@ class OwlViTTextTransformer(nn.Module):
         output_attentions: bool | None = None,
         output_hidden_states: bool | None = None,
         return_dict: bool | None = None,
+        **kwargs,
     ) -> tuple | BaseModelOutputWithPooling:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size * num_max_text_queries, sequence_length)`):
@@ -703,24 +689,23 @@ class OwlViTTextTransformer(nn.Module):
         input_ids = input_ids.view(-1, input_shape[-1])
         hidden_states = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
-        # num_samples, seq_len = input_shape  where num_samples = batch_size * num_max_text_queries
-        # OWLVIT's text model uses causal mask, prepare it here.
-        # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
-        causal_attention_mask = _create_4d_causal_attention_mask(
-            input_shape, hidden_states.dtype, device=hidden_states.device
+        attention_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=hidden_states,
+            attention_mask=attention_mask,
+            cache_position=torch.arange(hidden_states.shape[1], device=hidden_states.device),
+            past_key_values=None,
         )
-        # expand attention_mask
-        if attention_mask is not None:
-            # [num_samples, seq_len] -> [num_samples, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
 
+        kwargs.pop("is_causal", None)
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
             attention_mask=attention_mask,
-            causal_attention_mask=causal_attention_mask,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            is_causal=True,
+            **kwargs,
         )
 
         last_hidden_state = encoder_outputs[0]
@@ -800,15 +785,17 @@ class OwlViTTextModel(OwlViTPreTrainedModel):
         )
 
 
-class OwlViTVisionTransformer(nn.Module):
+class OwlViTVisionTransformer(OwlViTPreTrainedModel):
     def __init__(self, config: OwlViTVisionConfig):
-        super().__init__()
-        self.config = config
+        super().__init__(config)
 
         self.embeddings = OwlViTVisionEmbeddings(config)
         self.pre_layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.encoder = OwlViTEncoder(config)
         self.post_layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+        # Initialize weights and apply final processing
+        self.post_init()
 
     @auto_docstring
     def forward(
@@ -818,6 +805,7 @@ class OwlViTVisionTransformer(nn.Module):
         output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool | None = False,
         return_dict: bool | None = None,
+        **kwargs,
     ) -> tuple | BaseModelOutputWithPooling:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -837,6 +825,7 @@ class OwlViTVisionTransformer(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs,
         )
 
         last_hidden_state = encoder_outputs[0]

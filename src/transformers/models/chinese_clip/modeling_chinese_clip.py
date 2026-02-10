@@ -288,8 +288,7 @@ class ChineseCLIPTextSelfAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor]:
-        output_attentions = kwargs.get("output_attentions")
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.attention_head_size)
 
@@ -313,8 +312,7 @@ class ChineseCLIPTextSelfAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        outputs = (attn_output, attn_weights) if output_attentions else (attn_output,)
-        return outputs
+        return attn_output, attn_weights
 
 
 # Copied from transformers.models.bert.modeling_bert.BertSelfOutput with Bert->ChineseCLIPText
@@ -667,13 +665,11 @@ class ChineseCLIPVisionEncoder(nn.Module):
                 This is useful if you want more control over how to convert `input_ids` indices into associated vectors
                 than the model's internal embedding lookup matrix.
         """
-        output_attentions = kwargs.get("output_attentions")
-
         hidden_states = inputs_embeds
         for encoder_layer in self.layers:
             layer_outputs = encoder_layer(
                 hidden_states,
-                output_attentions=output_attentions,
+                **kwargs,
             )
 
             hidden_states = layer_outputs[0]

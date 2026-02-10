@@ -136,9 +136,9 @@ class SplinterSelfAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
+
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor]:
-        output_attentions = kwargs.get("output_attentions")
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.attention_head_size)
 
@@ -162,8 +162,7 @@ class SplinterSelfAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        outputs = (attn_output, attn_weights) if output_attentions else (attn_output,)
-        return outputs
+        return attn_output, attn_weights
 
 
 # Copied from transformers.models.bert.modeling_bert.BertSelfOutput with Bert->Splinter
@@ -192,6 +191,7 @@ class SplinterAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
+
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_outputs = self.self(
@@ -249,6 +249,7 @@ class SplinterLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
+
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor]:
         self_attention_outputs = self.attention(
@@ -284,6 +285,7 @@ class SplinterEncoder(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: torch.FloatTensor | None = None,
+
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor] | BaseModelOutput:
         for i, layer_module in enumerate(self.layer):
