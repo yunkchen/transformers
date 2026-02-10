@@ -113,12 +113,13 @@ from .utils import (
     is_grouped_mm_available,
     is_kernels_available,
     is_torch_flex_attn_available,
+    is_torch_greater_or_equal,
     is_torch_mlu_available,
     is_torch_npu_available,
     is_torch_xpu_available,
     logging,
 )
-from .utils.generic import GeneralInterface, is_flash_attention_requested
+from .utils.generic import _CAN_RECORD_REGISTRY, GeneralInterface, OutputRecorder, is_flash_attention_requested
 from .utils.hub import DownloadKwargs, create_and_tag_model_card, get_checkpoint_shard_files
 from .utils.import_utils import (
     is_huggingface_hub_greater_or_equal,
@@ -126,7 +127,6 @@ from .utils.import_utils import (
     is_tracing,
 )
 from .utils.loading_report import LoadStateDictInfo, log_state_dict_report
-from .utils.output_capturing import _CAN_RECORD_REGISTRY, OutputRecorder
 from .utils.quantization_config import QuantizationMethod
 
 
@@ -177,7 +177,6 @@ class LoadStateDictConfig:
     disk_offload_folder: str | None = None
     offload_buffers: bool = False
     dtype: torch.dtype | None = None
-    dtype_plan: dict = field(default_factory=dict)
     hf_quantizer: HfQuantizer | None = None
     device_mesh: Optional["torch.distributed.device_mesh.DeviceMesh"] = None
     weights_only: bool = True
@@ -249,7 +248,8 @@ def get_torch_context_manager_or_global_device():
     is not "cpu". This is used to infer the correct device to load the model on, in case `device_map` is not provided.
     """
     device_in_context = torch.tensor([]).device
-    default_device = torch.get_default_device()
+    # `get_default_device` was only introduced in torch>=2.3 - use cpu otherwise to align the behavior
+    default_device = torch.get_default_device() if is_torch_greater_or_equal("2.3") else torch.device("cpu")
     # This case means no context manager was used -> we still check if the default that was potentially set is not cpu
     if device_in_context == default_device:
         if default_device != torch.device("cpu"):
@@ -277,18 +277,21 @@ str_to_torch_dtype = {
     "U8": torch.uint8,
     "I8": torch.int8,
     "I16": torch.int16,
-    "U16": torch.uint16,
     "F16": torch.float16,
     "BF16": torch.bfloat16,
     "I32": torch.int32,
-    "U32": torch.uint32,
     "F32": torch.float32,
     "F64": torch.float64,
     "I64": torch.int64,
-    "U64": torch.uint64,
     "F8_E4M3": torch.float8_e4m3fn,
     "F8_E5M2": torch.float8_e5m2,
 }
+
+
+if is_torch_greater_or_equal("2.3.0"):
+    str_to_torch_dtype["U16"] = torch.uint16
+    str_to_torch_dtype["U32"] = torch.uint32
+    str_to_torch_dtype["U64"] = torch.uint64
 
 
 def load_state_dict(
@@ -1122,6 +1125,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
     # to also prevent bfloat16 casting, use the _keep_in_fp32_modules_strict flag
     _keep_in_fp32_modules_strict = None
 
+    dtype_plan: dict[str, torch.dtype] | None = None
+
     # a list of `re` patterns of `state_dict` keys that should be removed from the list of missing
     # keys we find (keys inside the model but not in the checkpoint) and avoid unnecessary warnings.
     _keys_to_ignore_on_load_missing = None
@@ -1183,7 +1188,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
     input_modalities: str | list[str] = "text"  # most models are text
 
     @property
-    @torch.compiler.allow_in_graph
+    @torch._dynamo.allow_in_graph
     def can_record_outputs(self) -> dict[str, OutputRecorder]:
         """
          Maps output names (e.g., "attentions", "hidden_states")
@@ -1265,7 +1270,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 f"`model = {self.__class__.__name__}.from_pretrained(PRETRAINED_MODEL_NAME)`"
             )
         self.config = config
-        self.name_or_path = config.name_or_path
 
         # Check the attention implementation is supported, or set it if not yet set (on the internal attr, to avoid
         # setting it recursively)
@@ -1291,33 +1295,40 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 loss_type = None
         self.loss_type = loss_type
 
+        self.name_or_path = config.name_or_path
+        self.warnings_issued = {}
+        # Overwrite the class attribute to make it an instance attribute, so models like
+        # `InstructBlipForConditionalGeneration` can dynamically update it without modifying the class attribute
+        # when a different component (e.g. language_model) is used. Same for `_tied_weights_keys` which pops/adds
+        # new keys dynamically depending on config values
+        self._keep_in_fp32_modules = copy.copy(self.__class__._keep_in_fp32_modules)
+        self._keep_in_fp32_modules_strict = copy.copy(self.__class__._keep_in_fp32_modules_strict)
+        self._tied_weights_keys = copy.copy(self.__class__._tied_weights_keys)
+        self.dtype_plan = {}
+
+        if isinstance(self._keep_in_fp32_modules, list):
+            self.dtype_plan.update(dict.fromkeys(self._keep_in_fp32_modules, torch.float32))
+        if isinstance(self._keep_in_fp32_modules_strict, list):
+            self.dtype_plan.update(dict.fromkeys(self._keep_in_fp32_modules_strict, torch.float32))
+
+        self._no_split_modules = self._no_split_modules or []
         _CAN_RECORD_REGISTRY[str(self.__class__)] = self._can_record_outputs  # added for executorch support only
 
     def post_init(self):
         """
         A method executed at the end of each Transformer model initialization, to execute code that needs the model's
         modules properly initialized (such as weight initialization).
-        It is also used to obtain all correct static properties (parallelism plans, tied_weights_keys, _keep_in_fp32_modules, etc)
-        correctly in the case of composite models (that is, the top level model should know about those properties from its children).
         """
         # Attach the different parallel plans and tied weight keys to the top-most model, so that everything is
         # easily available
         self._tp_plan, self._ep_plan, self._pp_plan = {}, {}, {}
+        # Current submodel should register its tied weights
+        self.all_tied_weights_keys = self.get_expanded_tied_weights_keys(all_submodels=False)
         # If current model is a base model, attach `base_model_tp_plan` and `base_model_pp_plan` from config
         if self.base_model is self:
             self._pp_plan = self.config.base_model_pp_plan.copy() if self.config.base_model_pp_plan is not None else {}
             self._tp_plan = self.config.base_model_tp_plan.copy() if self.config.base_model_tp_plan is not None else {}
             self._ep_plan = self.config.base_model_ep_plan.copy() if self.config.base_model_ep_plan is not None else {}
-        # Current submodel should register its tied weights
-        self.all_tied_weights_keys = self.get_expanded_tied_weights_keys(all_submodels=False)
-        # Current submodel should register its `_keep_in_fp32_modules`
-        self._keep_in_fp32_modules = set(self._keep_in_fp32_modules or [])
-        self._keep_in_fp32_modules_strict = set(self._keep_in_fp32_modules_strict or [])
-        # Current submodel must register its `_no_split_modules` as well
-        self._no_split_modules = set(self._no_split_modules or [])
-
-        # Iterate over children only: as the final model is created, this is enough to gather the properties from all submodels.
-        # This works because the way the `__init__` and `post_init` are called on all submodules is depth-first in the graph
         for name, module in self.named_children():
             # Parallel plans
             if plan := getattr(module, "_ep_plan", None):
@@ -1329,14 +1340,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             # Always attach the keys of the children (if the children's config says to NOT tie, then it's empty)
             if tied_keys := getattr(module, "all_tied_weights_keys", None):
                 self.all_tied_weights_keys.update({f"{name}.{k}": f"{name}.{v}" for k, v in tied_keys.copy().items()})
-            # Record keep_in_fp_32 modules from the children as well
-            if keep_fp32 := getattr(module, "_keep_in_fp32_modules", None):
-                self._keep_in_fp32_modules.update(keep_fp32)
-            if keep_fp32_strict := getattr(module, "_keep_in_fp32_modules_strict", None):
-                self._keep_in_fp32_modules_strict.update(keep_fp32_strict)
-            # Record `_no_split_modules` from the children
-            if no_split := getattr(module, "_no_split_modules", None):
-                self._no_split_modules.update(no_split)
 
         # Maybe initialize the weights and tie the keys
         self.init_weights()
@@ -2318,14 +2321,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         if getattr(module, "_is_hf_initialized", False):
             return
 
-        if (
-            (weight := getattr(module, "weight", None)) is not None
-            and getattr(weight, "_is_hf_initialized", False)
-            and not list(module.named_buffers())
-        ):
-            module._is_hf_initialized = True
-            return
-
         self._init_weights(module)
         module._is_hf_initialized = True
 
@@ -2562,6 +2557,35 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             )
         if hasattr(output_embeddings, "out_features") and hasattr(input_embeddings, "num_embeddings"):
             output_embeddings.out_features = input_embeddings.num_embeddings
+
+    def _get_no_split_modules(self, device_map: str):
+        """
+        Get the modules of the model that should not be spit when using device_map. We iterate through the modules to
+        get the underlying `_no_split_modules`.
+
+        Args:
+            device_map (`str`):
+                The device map value. Options are ["auto", "balanced", "balanced_low_0", "sequential"]
+
+        Returns:
+            `list[str]`: List of modules that should not be split
+        """
+        _no_split_modules = set()
+        modules_to_check = [self]
+        while len(modules_to_check) > 0:
+            module = modules_to_check.pop(-1)
+            # if the module does not appear in _no_split_modules, we also check the children
+            if module.__class__.__name__ not in _no_split_modules:
+                if isinstance(module, PreTrainedModel):
+                    if module._no_split_modules is None:
+                        raise ValueError(
+                            f"{module.__class__.__name__} does not support `device_map='{device_map}'`. To implement support, the model "
+                            "class needs to implement the `_no_split_modules` attribute."
+                        )
+                    else:
+                        _no_split_modules = _no_split_modules | set(module._no_split_modules)
+                modules_to_check += list(module.children())
+        return list(_no_split_modules)
 
     def resize_token_embeddings(
         self,
@@ -3578,22 +3602,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         return init_contexts
 
-    def _get_dtype_plan(self, dtype: torch.dtype) -> dict:
-        """Create the dtype_plan describing modules/parameters that should use the `keep_in_fp32` flag."""
-        dtype_plan = {}
-
-        # The _keep_in_fp32_modules flag is only used to avoid bf16 -> fp16 casting precision issues. It was introduced
-        # in case of force loading a model that should stay in bf16 in fp16
-        # See https://github.com/huggingface/transformers/issues/20287 for details.
-        if self._keep_in_fp32_modules is not None and dtype == torch.float16:
-            dtype_plan.update(dict.fromkeys(self._keep_in_fp32_modules, torch.float32))
-
-        # The _keep_in_fp32_modules_strict was introduced to always force upcast to fp32, for both fp16 and bf16
-        if self._keep_in_fp32_modules_strict is not None and dtype in (torch.float16, torch.bfloat16):
-            dtype_plan.update(dict.fromkeys(self._keep_in_fp32_modules_strict, torch.float32))
-
-        return dtype_plan
-
     def set_use_kernels(self, use_kernels, kernel_config: KernelConfig | None = None):
         """
         Set whether or not to use the `kernels` library to kernelize some layers of the model.
@@ -4044,10 +4052,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                     use_kernels=use_kernels,
                 )
 
-        # Create the dtype_plan to potentially use the `keep_in_fp32` flags (this needs to be called on the already
-        # instantiated model, as the flags can be modified by instances sometimes)
-        dtype_plan = model._get_dtype_plan(dtype)
-
         # Obtain the weight conversion mapping for this model if any are registered
         weight_conversions = get_model_conversion_mapping(model, key_mapping, hf_quantizer)
 
@@ -4067,7 +4071,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             disk_offload_folder=offload_folder,
             offload_buffers=offload_buffers,
             dtype=dtype,
-            dtype_plan=dtype_plan,
             hf_quantizer=hf_quantizer,
             device_mesh=device_mesh,
             weights_only=weights_only,
@@ -4199,6 +4202,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 state_dict=merged_state_dict,
                 load_config=load_config,
                 tp_plan=model._tp_plan,
+                dtype_plan=model.dtype_plan,
                 disk_offload_index=disk_offload_index,
             )
 
@@ -4215,38 +4219,35 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         """Perform all post processing operations after having loaded some checkpoints into a model, such as moving
         missing keys from meta device to their expected device, reinitializing missing weights according to proper
         distributions, tying the weights and logging the loading report."""
-        try:
-            # Adjust `all_tied_weights_keys` before marking them as initialized
-            model._adjust_tied_keys_with_tied_pointers(loading_info.missing_and_mismatched())
 
-            # Marks tied weights as `_is_hf_initialized` to avoid initializing them (it's very important for efficiency)
-            model.mark_tied_weights_as_initialized()
+        # Marks tied weights as `_is_hf_initialized` to avoid initializing them (it's very important for efficiency)
+        model.mark_tied_weights_as_initialized()
 
-            # Move missing (and potentially mismatched) keys and non-persistent buffers back to their expected device from
-            # meta device (because they were not moved when loading the weights as they were not in the loaded state dict)
-            model._move_missing_keys_from_meta_to_device(
-                loading_info.missing_and_mismatched(),
-                load_config.device_map,
-                load_config.device_mesh,
-                load_config.hf_quantizer,
-            )
+        # Move missing (and potentially mismatched) keys and non-persistent buffers back to their expected device from
+        # meta device (because they were not moved when loading the weights as they were not in the loaded state dict)
+        model._move_missing_keys_from_meta_to_device(
+            loading_info.missing_and_mismatched(),
+            load_config.device_map,
+            load_config.device_mesh,
+            load_config.hf_quantizer,
+        )
 
-            # Correctly initialize the missing (and potentially mismatched) keys (all parameters without the `_is_hf_initialized` flag)
-            model._initialize_missing_keys(load_config.is_quantized)
+        # Correctly initialize the missing (and potentially mismatched) keys (all parameters without the `_is_hf_initialized` flag)
+        model._initialize_missing_keys(load_config.is_quantized)
 
-            # Tie the weights
-            model.tie_weights(missing_keys=loading_info.missing_keys, recompute_mapping=False)
+        # Tie the weights
+        model.tie_weights(missing_keys=loading_info.missing_keys, recompute_mapping=False)
 
-            # Adjust missing and unexpected keys
-            model._adjust_missing_and_unexpected_keys(loading_info)
-        finally:
-            log_state_dict_report(
-                model=model,
-                pretrained_model_name_or_path=load_config.pretrained_model_name_or_path,
-                ignore_mismatched_sizes=load_config.ignore_mismatched_sizes,
-                loading_info=loading_info,
-                logger=logger,
-            )
+        # Adjust missing and unexpected keys
+        model._adjust_missing_and_unexpected_keys(loading_info)
+
+        log_state_dict_report(
+            model=model,
+            pretrained_model_name_or_path=load_config.pretrained_model_name_or_path,
+            ignore_mismatched_sizes=load_config.ignore_mismatched_sizes,
+            loading_info=loading_info,
+            logger=logger,
+        )
 
         return loading_info
 
@@ -4433,35 +4434,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
     @classmethod
     def is_backend_compatible(cls):
         return cls._supports_attention_backend
-
-    def _adjust_tied_keys_with_tied_pointers(self, missing_keys: list[str]) -> None:
-        """
-        Adds keys to `self.all_tied_weights_keys` by checking if any group of params
-        share the same data ptr. It helps us support remote code where the weight tying is
-        done in old-T5 style, by manually assigning the same module to different param names.
-        If we don't add them back in `self.all_tied_weights_keys`, they will be re-initialized
-        and all params in tied group get random weights.
-        """
-        param_pointers = defaultdict(list)
-        for param_name, param_value in self.state_dict().items():
-            param_pointers[param_value.data_ptr()].append(param_name)
-
-        # Filter out params that are already in `self.all_tied_weights_keys` or if all
-        # are missing params. Missing param groups share the same data ptr by being on `meta`
-        tied_param_names = [
-            names
-            for names in param_pointers.values()
-            if len(names) > 1
-            and not any(name in self.all_tied_weights_keys.keys() for name in names)
-            and not all(name in missing_keys for name in names)
-        ]
-
-        # Create a dummy mapping, it doesn't matter which one is source/target
-        # because they are already tied
-        tied_weights_keys_by_pointers = {
-            param_name: group[0] for group in tied_param_names for param_name in group[1:]
-        }
-        self.all_tied_weights_keys.update(tied_weights_keys_by_pointers)
 
     def _move_missing_keys_from_meta_to_device(
         self,
@@ -4743,7 +4715,7 @@ def caching_allocator_warmup(model: PreTrainedModel, expanded_device_map: dict, 
             ) - torch_accelerator_module.memory_allocated(index)
             byte_count = int(max(0, byte_count - unused_memory))
         # We divide by 2 here as we allocate in fp16
-        _ = torch.empty(int(byte_count // 2), dtype=torch.float16, device=device, requires_grad=False)
+        _ = torch.empty(byte_count // 2, dtype=torch.float16, device=device, requires_grad=False)
 
 
 class AttentionInterface(GeneralInterface):
