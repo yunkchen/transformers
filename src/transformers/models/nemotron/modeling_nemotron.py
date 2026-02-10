@@ -339,8 +339,6 @@ class NemotronFlashAttention2(NemotronAttention):
                 "make sure to use `sdpa` in the mean time, and open an issue at https://github.com/huggingface/transformers"
             )
 
-        output_attentions = False
-
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -413,7 +411,7 @@ class NemotronFlashAttention2(NemotronAttention):
         attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, attn_weights
+        return attn_output, None
 
 
 # NO LONGER EXIST Copied from transformers.models.llama.modeling_llama.LlamaSdpaAttention with LLAMA->NEMOTRON,Llama->Nemotron,llama->nemotron
@@ -534,6 +532,7 @@ class NemotronDecoderLayer(GradientCheckpointingLayer):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
         )
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
