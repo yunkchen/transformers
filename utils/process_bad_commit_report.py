@@ -148,4 +148,5 @@ if __name__ == "__main__":
 
     report = f"<{url}|New failed tests>\\n\\n"
     report += json.dumps(output, indent=4).replace('"', '\\"').replace("\n", "\\n")
+    exit(-1)
     print(report)
