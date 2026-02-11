@@ -336,6 +336,7 @@ if __name__ == "__main__":
             generation_cfg,
             tokenizer,
             displayed_samples=-1,
+            use_async=args.use_async,
         )
 
     if args.profile is not None:
