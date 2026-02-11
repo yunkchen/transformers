@@ -604,14 +604,6 @@ def all_reduce_forward(x, device_mesh):
     return _AllReduceForward.apply(x, device_mesh)
 
 
-def _all_reduce_gradient(grad, device_mesh):
-    """All-reduce a parameter gradient across the TP mesh."""
-    if device_mesh.size() == 1:
-        return grad
-    dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=device_mesh.get_group(), async_op=False)
-    return grad
-
-
 def all_gather(x, device_mesh):
     """All-gather forward, split backward."""
     return _AllGather.apply(x, device_mesh)
@@ -760,7 +752,7 @@ class ReplicatedWithGradAllReduce(TensorParallelLayer):
         def _backward_hook(mod, grad_input, grad_output, mesh=device_mesh):
             for param in mod.parameters():
                 if param.grad is not None:
-                    _all_reduce_gradient(param.grad, mesh)
+                    all_reduce_forward(param.grad, mesh)
 
         module.register_full_backward_hook(_backward_hook)
 
