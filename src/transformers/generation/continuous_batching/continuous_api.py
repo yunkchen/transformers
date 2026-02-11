@@ -535,8 +535,11 @@ class ContinuousBatchingManager:
             num_kv_padding_intervals=num_kv_padding_intervals,
             compile_config=getattr(generation_config, "compile_config", None),
         )
-        # For now, if no behavior is given for the async API, we use the same behavior as for the cuda graphs
-        self.use_async = use_async if use_async is not None else self.use_cuda_graph
+        # If no behavior is given for the async API, it's turned on if cuda graphs are on and there is no attention mask
+        if use_async is not None:
+            self.use_async = use_async
+        else:
+            self.use_async = self.use_cuda_graph and not attn_mask_is_needed(self.model.config)
 
         # We set the number of padding intervals for Q and KV
         self.q_padding_intervals = num_q_padding_intervals if num_q_padding_intervals > 0 else NUM_Q_PADDING_INTERVALS
