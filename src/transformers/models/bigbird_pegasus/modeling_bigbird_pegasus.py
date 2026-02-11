@@ -138,6 +138,7 @@ class BigBirdPegasusSelfAttention(nn.Module):
         encoder_attention_mask=None,
         past_key_values=None,
         cache_position=None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         batch_size, seq_length, _ = hidden_states.shape
         query_layer = (
@@ -202,6 +203,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
     def __init__(self, config, seed=None):
         super().__init__()
 
+        self.config = config
         self.max_seqlen = config.max_position_embeddings
         self.seed = seed
 
@@ -230,8 +232,10 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         to_mask=None,
         from_blocked_mask=None,
         to_blocked_mask=None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         # Currently this `class` can't be used in decoder.
+        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
 
         batch_size, seqlen, _ = hidden_states.size()
         to_seq_length = from_seq_length = seqlen
@@ -279,6 +283,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             seed=self.seed,
             plan_from_length=None,
             plan_num_rand_blocks=None,
+            output_attentions=output_attentions,
         )
 
         context_layer = context_layer.contiguous().view(batch_size, from_seq_length, -1)
@@ -321,6 +326,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         seed,
         plan_from_length,
         plan_num_rand_blocks,
+        output_attentions,
     ):
         # BigBirdPegasus block-sparse attention as suggested in paper
 
@@ -658,7 +664,9 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                     to_block_size,
                 )
                 right_slice = w2[:, 4 * to_block_size :]
-                attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
+                attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(
+                    from_block_size, n_rand_blocks, to_block_size
+                )
 
         # Middle query blocks
         # corresponding to `context_layer`
@@ -1139,10 +1147,17 @@ class BigBirdPegasusEncoderAttention(nn.Module):
             context_layer, attention_probs = self.self(
                 hidden_states,
                 attention_mask,
+                **kwargs,
             )
         else:
             context_layer, attention_probs = self.self(
-                hidden_states, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask
+                hidden_states,
+                band_mask,
+                from_mask,
+                to_mask,
+                from_blocked_mask,
+                to_blocked_mask,
+                **kwargs,
             )
 
         attention_output = self.output(context_layer)
@@ -1228,6 +1243,8 @@ class BigBirdPegasusDecoderAttention(nn.Module):
         past_key_values: Cache | None = None,
         attention_mask: torch.Tensor | None = None,
         cache_position: torch.Tensor | None = None,
+        # TODO: we might need a refactor so that the different attention modules can get their specific kwargs
+        # ATM, we have mixed things encoder, decoder, and encoder-decoder attn
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Input shape: Batch x Time x Channel"""
@@ -1410,16 +1427,29 @@ class BigBirdPegasusDecoderLayer(GradientCheckpointingLayer):
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_attention_mask: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
-        use_cache: bool | None = True,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`): attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            encoder_hidden_states (`torch.FloatTensor`):
+                cross attention input to the layer of shape `(batch, seq_len, embed_dim)`
+            encoder_attention_mask (`torch.FloatTensor`): encoder attention mask of size
+                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+            past_key_values (`Cache`): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence. It is used to update the
+                cache in the correct position and to infer the complete sequence length.
+        """
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
 
         # Self Attention
         hidden_states, _ = self.self_attn(
-            hidden_states,
+            hidden_states=hidden_states,
             past_key_values=past_key_values,
             attention_mask=attention_mask,
             cache_position=cache_position,
@@ -1434,7 +1464,7 @@ class BigBirdPegasusDecoderLayer(GradientCheckpointingLayer):
             hidden_states = self.encoder_attn_layer_norm(hidden_states)
 
             hidden_states, _ = self.encoder_attn(
-                hidden_states,
+                hidden_states=hidden_states,
                 key_value_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 past_key_values=past_key_values,

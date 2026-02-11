@@ -28,7 +28,7 @@ from ...modeling_outputs import (
     Seq2SeqModelOutput,
 )
 from ...modeling_utils import PreTrainedModel
-from ...utils import auto_docstring
+from ...utils import auto_docstring, can_return_tuple
 from ..bart.modeling_bart import (
     BartClassificationHead,
     BartDecoder,
@@ -381,6 +381,7 @@ class PLBartForSequenceClassification(BigBirdPegasusForSequenceClassification):
 
 
 class PLBartForCausalLM(BartForCausalLM):
+    @can_return_tuple
     @auto_docstring
     def forward(**super_kwargs):
         r"""

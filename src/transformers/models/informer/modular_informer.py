@@ -25,8 +25,11 @@ from ...modeling_outputs import (
     BaseModelOutput,
 )
 from ...modeling_utils import PreTrainedModel
+from ...processing_utils import Unpack
 from ...time_series_utils import NegativeBinomialOutput, NormalOutput, StudentTOutput
-from ...utils import auto_docstring
+from ...utils import TransformersKwargs, auto_docstring
+from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import OutputRecorder
 from ..bart.modeling_bart import BartAttention
 from ..time_series_transformer.modeling_time_series_transformer import (
     TimeSeriesFeatureEmbedder,
@@ -142,6 +145,7 @@ class InformerProbSparseAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         output_attentions: bool = False,
         cache_position: torch.Tensor | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
         """Input shape: Batch x Time x Channel"""
 
@@ -378,6 +382,11 @@ class InformerDecoderLayer(TimeSeriesTransformerDecoderLayer):
 
 
 class InformerEncoder(TimeSeriesTransformerEncoder):
+    _can_record_outputs = {
+        "hidden_states": InformerEncoderLayer,
+        "attentions": OutputRecorder(target_class=None, index=1, class_name="self_attn"),
+    }
+
     def __init__(self, config: InformerConfig):
         super().__init__(config)
 
@@ -405,43 +414,13 @@ class InformerEncoder(TimeSeriesTransformerEncoder):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @check_model_inputs
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> tuple | BaseModelOutput:
-        r"""
-        Args:
-            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-                - 1 for tokens that are **not masked**,
-                - 0 for tokens that are **masked**.
-
-                [What are attention masks?](../glossary#attention-mask)
-            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-                Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
-                This is useful if you want more control over how to convert `input_ids` indices into associated vectors
-                than the model's internal embedding lookup matrix.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            output_hidden_states (`bool`, *optional*):
-                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
-                for more detail.
-            return_dict (`bool`, *optional*):
-                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-        """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        **encoder_kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutput:
         hidden_states = self.value_embedding(inputs_embeds)
         embed_pos = self.embed_positions(inputs_embeds.size())
 
@@ -454,12 +433,7 @@ class InformerEncoder(TimeSeriesTransformerEncoder):
             attention_mask=attention_mask,
         )
 
-        encoder_states = () if output_hidden_states else None
-        all_attentions = () if output_attentions else None
-
         for idx, (encoder_layer, conv_layer) in enumerate(zip(self.layers, self.conv_layers)):
-            if output_hidden_states:
-                encoder_states = encoder_states + (hidden_states,)
             # add LayerDrop (see https://huggingface.co/papers/1909.11556 for description)
             to_drop = False
             if self.training:
@@ -467,34 +441,27 @@ class InformerEncoder(TimeSeriesTransformerEncoder):
                 if dropout_probability < self.layerdrop:  # skip the layer
                     to_drop = True
 
-            if to_drop:
-                layer_outputs = (None, None)
-            else:
-                layer_outputs = encoder_layer(
+            if not to_drop:
+                hidden_states = encoder_layer(
                     hidden_states,
                     attention_mask,
-                    output_attentions=output_attentions,
+                    **encoder_kwargs,
                 )
                 if conv_layer is not None:
-                    output = conv_layer(layer_outputs[0])
-                    layer_outputs = (output,) + layer_outputs[1:]
+                    hidden_states = conv_layer(hidden_states)
 
-                hidden_states = layer_outputs[0]
-
-            if output_attentions:
-                all_attentions = all_attentions + (layer_outputs[1],)
-
-        if output_hidden_states:
-            encoder_states = encoder_states + (hidden_states,)
-
-        if not return_dict:
-            return tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
         return BaseModelOutput(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
+            last_hidden_state=hidden_states,
         )
 
 
 class InformerDecoder(TimeSeriesTransformerDecoder):
+    _can_record_outputs = {
+        "hidden_states": InformerDecoderLayer,
+        "attentions": OutputRecorder(target_class=None, index=1, class_name="self_attn"),
+        "cross_attentions": OutputRecorder(InformerAttention, index=1, layer_name="encoder_attn"),
+    }
+
     def __init__(self, config: InformerConfig):
         super().__init__(config)
         self.dropout = config.dropout
