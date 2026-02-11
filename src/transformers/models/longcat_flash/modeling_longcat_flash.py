@@ -559,6 +559,7 @@ class LongcatFlashPreTrainedModel(PreTrainedModel):
         "hidden_states": LongcatFlashDecoderLayer,
         "attentions": LongcatFlashMLA,
     }
+    _keys_to_ignore_on_load_unexpected = [r"model\.mtp.*"]
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -574,8 +575,6 @@ class LongcatFlashPreTrainedModel(PreTrainedModel):
 
 @auto_docstring
 class LongcatFlashModel(LongcatFlashPreTrainedModel):
-    _keys_to_ignore_on_load_unexpected = [r"model\.mtp.*"]
-
     def __init__(self, config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
