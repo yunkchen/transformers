@@ -1164,7 +1164,7 @@ class MoeIdentityExpertParallel(TensorParallelLayer):
     @staticmethod
     def _prepare_input_fn(mod, inputs, device_mesh):
         input_tensor = inputs[0] if inputs else inputs
-        #TODO(fmom): when 2D-device mesh, need to select a //-ism axis to divide the input tensor by.
+        # TODO(fmom): when 2D-device mesh, need to select a //-ism axis to divide the input tensor by.
         return input_tensor / device_mesh.size()
 
     def shard_tensor(self, param, tensor_idx=None, device=None, dtype=None):
