@@ -3817,11 +3817,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             key_mapping (`dict[str, str], *optional*):
                 A potential mapping of the weight names if using a model on the Hub which is compatible to a Transformers
                 architecture, but was not converted accordingly.
-            patch_mapping (`dict[str, Type[torch.nn.Module]], *optional*):
-                A dictionary mapping module names to replacement module classes for patching the model architecture
-                before weight loading. This allows replacing specific components (e.g., MixtralExperts) with custom
-                alternatives. The keys should be class names as strings (e.g., "MixtralExperts"), and values
-                should be the replacement classes.
             kwargs (remaining dictionary of keyword arguments, *optional*):
                 Can be used to update the configuration object (after it being loaded) and initiate the model (e.g.,
                 `output_attentions=True`). Behaves differently depending on whether a `config` is provided or
