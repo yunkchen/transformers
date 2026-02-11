@@ -383,7 +383,6 @@ class ContinuousBatchProcessor:
         batch_data = self.inputs_and_outputs.get_model_kwargs(padded_q, padded_read_index_size)
         compute_stream = self.inputs_and_outputs.compute_stream
 
-
         # If we are not using cuda graphs, we perform the generation step and return
         if not self.use_cuda_graph:
             with torch.cuda.stream(compute_stream):
@@ -399,11 +398,12 @@ class ContinuousBatchProcessor:
             # Otherwise, the graph does not exist, so we create it
             else:
                 logger.info(f"Creating graph for {(padded_q, padded_read_index_size) = }")
-                compute_stream.wait_stream(torch.cuda.current_stream())
+                # TODO: remove this once we are sure there are no race conditions
+                # compute_stream.wait_stream(torch.cuda.current_stream())
                 # Warmup
                 with torch.cuda.stream(compute_stream):
                     self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
-                torch.cuda.current_stream().wait_stream(compute_stream)
+                # torch.cuda.current_stream().wait_stream(compute_stream)
                 # Capture
                 graph = torch.cuda.CUDAGraph()
                 with torch.cuda.graph(graph, stream=compute_stream):
@@ -486,6 +486,7 @@ class ContinuousBatchingManager:
         num_q_padding_intervals: int = 0,
         num_kv_padding_intervals: int = 0,
         allow_block_sharing: bool = True,
+        use_async: bool | None = None,
     ) -> None:
         """Initialize the continuous batching manager.
 
@@ -496,6 +497,7 @@ class ContinuousBatchingManager:
             num_q_padding_intervals: (optional) Number of intervals used to pad the query dimension
             num_kv_padding_intervals: (optional) Number of intervals used to pad the keys/values dimension
             allow_block_sharing: (optional) Whether to allow block sharing if the model has some full attention layers
+            use_async: Whether to use async API or not. If None, will be automatically detected.
         """
         # Reload paged version of the attention implementation if necessary
         if "paged|" not in model.config._attn_implementation:
@@ -533,6 +535,8 @@ class ContinuousBatchingManager:
             num_kv_padding_intervals=num_kv_padding_intervals,
             compile_config=getattr(generation_config, "compile_config", None),
         )
+        # For now, if no behavior is given for the async API, we use the same behavior as for the cuda graphs
+        self.use_async = use_async if use_async is not None else self.use_cuda_graph
 
         # We set the number of padding intervals for Q and KV
         self.q_padding_intervals = num_q_padding_intervals if num_q_padding_intervals > 0 else NUM_Q_PADDING_INTERVALS
@@ -768,7 +772,6 @@ class ContinuousBatchingManager:
     def _run_generation_loop(self) -> None:
         """Main processing loop running in the background thread."""
         batch_processor: ContinuousBatchProcessor | None = None
-        self.use_async = True # TODO: BUG: this needs a knob
         try:
             t0 = perf_counter()
             paged_attention_cache = PagedAttentionCache(
@@ -883,14 +886,16 @@ class ContinuousMixin:
         allow_block_sharing: bool = True,
         block: bool = True,
         timeout: float | None = None,
+        use_async: bool | None = None,  # leave to None for automatic detection
     ) -> Generator[ContinuousBatchingManager]:
         manager = self.init_continuous_batching(
-            generation_config,
-            manual_eviction,
-            max_queue_size,
-            num_q_cuda_graphs,
-            num_kv_cuda_graphs,
-            allow_block_sharing,
+            generation_config=generation_config,
+            manual_eviction=manual_eviction,
+            max_queue_size=max_queue_size,
+            num_q_padding_intervals=num_q_cuda_graphs,
+            num_kv_padding_intervals=num_kv_cuda_graphs,
+            allow_block_sharing=allow_block_sharing,
+            use_async=use_async,
         )
         manager.start()
         try:
@@ -910,6 +915,7 @@ class ContinuousMixin:
         num_q_padding_intervals: int = 0,
         num_kv_padding_intervals: int = 0,
         allow_block_sharing: bool = True,
+        use_async: bool | None = None,
     ) -> ContinuousBatchingManager:
         """Initialize a manager for continuous batching inference.
 
@@ -920,7 +926,7 @@ class ContinuousMixin:
             num_q_padding_intervals: Number of intervals used to pad the query dimension
             num_kv_padding_intervals: Number of intervals used to pad the keys/values dimension
             allow_block_sharing: A flag to allow block sharing if the model has some full attention layers
-
+            use_async: Whether to use async API or not. If None, will be automatically detected.
         Returns:
             `ContinuousBatchingManager`: The manager instance to add requests and retrieve results.
         """
@@ -944,6 +950,7 @@ class ContinuousMixin:
             num_q_padding_intervals=num_q_padding_intervals,
             num_kv_padding_intervals=num_kv_padding_intervals,
             allow_block_sharing=allow_block_sharing,
+            use_async=use_async,
         )
 
     # TODO: support streaming
@@ -958,6 +965,7 @@ class ContinuousMixin:
         allow_block_sharing: bool = True,
         record_timestamps: bool = False,
         progress_bar: bool = True,
+        use_async: bool | None = None,
         **kwargs,
     ) -> dict[str, GenerationOutput]:
         """Generate sequences for a batch of prompts using continuous batching.
@@ -993,6 +1001,7 @@ class ContinuousMixin:
             allow_block_sharing=allow_block_sharing,
             block=True,
             timeout=5,
+            use_async=use_async,
         )
         logging_cm = logging_redirect_tqdm([logger])
         pbar_cm = tqdm(

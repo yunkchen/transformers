@@ -109,9 +109,10 @@ class ContinuousBatchingIOs:
         self.requests_in_batch: list[FutureRequestState] = []
         self.req_id_to_new_token_position: dict[str, int] = {}  # only used for async API
         self.graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
-        # Setup static tensors
+        # Setup static tensors and compute stream
         self._setup_static_tensors()
         self._reset_static_tensors(full_reset=True)
+        self.compute_stream = torch.cuda.Stream(device=self.device)
 
     @traced(standalone=True)
     def _setup_static_tensors(self) -> None:
@@ -243,15 +244,11 @@ class ContinuousBatchingIOs:
     def get_actual_lengths(self) -> tuple[int, int, int, list[int], list[int]]:
         return self.actual_query_length, self.actual_key_length, self.actual_batch_size, self.actual_read_sizes, self.actual_write_sizes
 
-    @property
-    def compute_stream(self) -> torch.cuda.Stream:
-        return torch.cuda.current_stream()
-
     def carry_over_tokens(self, input_ids: torch.Tensor) -> None:
         pass
 
     def retrieve_device_outputs(self) -> None:
-        pass  # serves no purpose for the sync API
+        self.compute_stream.synchronize()
 
     def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:
         requests_in_batch = self.requests_in_batch
@@ -480,6 +477,11 @@ class ContinuousBatchingAsyncIOs:
         self.h2d_stream = torch.cuda.Stream(device=device)
         self.d2h_stream = torch.cuda.Stream(device=device)
         self.compute_stream = torch.cuda.Stream(device=device)
+        # Set all compute streams to the same stream to avoid useless streams
+        self.io_pairs[0].host_io.compute_stream = self.compute_stream
+        self.io_pairs[0].device_io.compute_stream = self.compute_stream
+        self.io_pairs[1].host_io.compute_stream = self.compute_stream
+        self.io_pairs[1].device_io.compute_stream = self.compute_stream
         # Used in carry over ids computation
         self.max_batch_tokens = cache.max_batch_tokens
 
@@ -549,6 +551,7 @@ class ContinuousBatchingAsyncIOs:
         self.d2h_stream.record_event(io_pair.d2h_over)
         # Switch IO pair
         self.current_pair = 1 - self.current_pair
+        # No super() call, this would synchornize the compute stream
 
     # This method is called after the switch and not during the first batch
     def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:
