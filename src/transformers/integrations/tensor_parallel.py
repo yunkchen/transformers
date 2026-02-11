@@ -1151,6 +1151,29 @@ class MoeTensorParalellExperts(TensorParallelLayer):
         return param[...].to(device=device, dtype=dtype)
 
 
+class MoeIdentityExpertParallel(TensorParallelLayer):
+    """
+    TP class for zero/identity experts in MoE layers.
+
+    Under TP, the parent MoeTensorParalellExperts does all_reduce_forward (sum)
+    on the expert module output. Identity experts produce the same output on
+    every rank, so the sum gives world_size * output. This class divides the
+    input by world_size to compensate.
+    """
+
+    @staticmethod
+    def _prepare_input_fn(mod, inputs, device_mesh):
+        input_tensor = inputs[0] if inputs else inputs
+        #TODO(fmom): when 2D-device mesh, need to select a //-ism axis to divide the input tensor by.
+        return input_tensor / device_mesh.size()
+
+    def shard_tensor(self, param, tensor_idx=None, device=None, dtype=None):
+        return param[...].to(device=device, dtype=dtype)
+
+    def prepare_module_tp(self, module, device_mesh, **kwargs):
+        distribute_module(module, device_mesh, input_fn=self._prepare_input_fn)
+
+
 class ParallelInterface(GeneralInterface):
     # Class instance object, so that a call to `register` can be reflected into all other files correctly, even if
     # a new instance is created (in order to locally override a given entry)
@@ -1167,6 +1190,7 @@ class ParallelInterface(GeneralInterface):
             "grouped_gemm": GroupedGemmParallel(),
             "ep_router": RouterParallel(),
             "moe_tp_experts": MoeTensorParalellExperts(),
+            "moe_identity_expert": MoeIdentityExpertParallel(),
             "replicated_with_grad_allreduce": ReplicatedWithGradAllReduce(),
             "mla_kv_a_proj": MlaKvAProjParallel(),
         }

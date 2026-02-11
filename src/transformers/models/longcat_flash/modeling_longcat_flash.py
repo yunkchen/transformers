@@ -183,6 +183,7 @@ class LongcatFlashExperts(nn.Module):
         self.zero_expert_num = config.zero_expert_num or 0
         self.total_experts = self.num_routed_experts + self.zero_expert_num
         self.act_fn = ACT2FN[config.hidden_act]
+        self.identity_expert = nn.Identity()
 
         if self.num_routed_experts > 0:
             self.gate_up_proj = nn.Parameter(
@@ -211,10 +212,7 @@ class LongcatFlashExperts(nn.Module):
             current_state = hidden_states[token_idx]
 
             if expert_idx >= self.num_routed_experts or self.gate_up_proj is None:
-                # Zero expert: identity function. in TP case, we need to scale down the output by 1/tp_world_size otherwise it will get summed twice during all-reduce
-                current_hidden_states = current_state
-                if getattr(self, "_hf_tp_plan", None) is not None and torch.distributed.is_initialized():
-                    current_hidden_states /= torch.distributed.get_world_size()
+                current_hidden_states = self.identity_expert(current_state)
             else:
                 gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
                 current_hidden_states = self.act_fn(gate) * up

@@ -127,6 +127,7 @@ class LongcatFlashConfig(PreTrainedConfig):
         "layers.*.self_attn.*.o_proj": "rowwise",
         "layers.*.mlp.experts.gate_up_proj": "packed_colwise",
         "layers.*.mlp.experts.down_proj": "rowwise",
+        "layers.*.mlp.experts.identity_expert": "moe_identity_expert",
         "layers.*.mlp.experts": "moe_tp_experts",
         "layers.*.mlps.*.gate_proj": "colwise",
         "layers.*.mlps.*.up_proj": "colwise",
