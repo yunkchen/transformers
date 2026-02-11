@@ -220,7 +220,7 @@ class GlmMoeDsaConfig(PreTrainedConfig):
         self.index_topk = index_topk
         self.index_head_dim = index_head_dim
         self.index_n_heads = index_n_heads
-        self.indexer_rope_interleave = not indexer_rope_interleave
+        self.indexer_rope_interleave = indexer_rope_interleave
 
         # General config
         self.hidden_act = hidden_act

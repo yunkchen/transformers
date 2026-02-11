@@ -77,7 +77,6 @@ def apply_rotary_pos_emb(
     x: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
-    interleaved: bool = False,
     unsqueeze_dim: int = 1,
 ) -> torch.Tensor:
     """
@@ -86,19 +85,10 @@ def apply_rotary_pos_emb(
     This is the transformers equivalent of DeepSeek V3.2's `apply_rotary_emb(x, freqs_cis, interleaved)`.
     Instead of using complex-number `freqs_cis`, we use pre-split `(cos, sin)` tensors from RotaryEmbedding.
 
-    The `interleaved` flag controls how the rotation pairs are arranged in the last dimension:
-      - `interleaved=True` (default, used by MLA attention):
-            pairs are consecutive: (x0, x1), (x2, x3), ...
-            i.e. the "GPT-J" / interleaved style.
-      - `interleaved=False` (used by Indexer / DSA):
-            pairs are split halves: (x0, x_{d/2}), (x1, x_{d/2+1}), ...
-            i.e. the "NeoX" / Llama style.
-
     Args:
         x (`torch.Tensor`): Input tensor of shape `[..., head_dim]`.
         cos (`torch.Tensor`): Cosine part from RotaryEmbedding, shape `[batch, seq_len, head_dim]`.
         sin (`torch.Tensor`): Sine part from RotaryEmbedding, shape `[batch, seq_len, head_dim]`.
-        interleaved (`bool`): Whether rotary pairs are interleaved (True) or split-half (False).
         unsqueeze_dim (`int`): Dimension along which to unsqueeze cos/sin for broadcasting.
             Use `1` when x is `[B, H, S, D]` (BHSD) and `2` when x is `[B, S, H, D]` (BSHD).
 
@@ -108,19 +98,10 @@ def apply_rotary_pos_emb(
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
 
-    if interleaved:
-        # Interleaved: consecutive pairs (x0,x1), (x2,x3), ...
-        # Rearrange to split-half form, apply standard rotation.
-        # This matches deepseek_v3's apply_rotary_pos_emb_interleave logic.
-        shape = x.shape
-        x = x.view(*shape[:-1], shape[-1] // 2, 2).transpose(-1, -2).reshape(shape)
-        x_rotated = (x * cos) + (rotate_half(x) * sin)
-        return x_rotated
-    else:
-        # Split-half (NeoX/Llama style): (x[:d/2], x[d/2:])
-        # This matches llama's apply_rotary_pos_emb logic.
-        x_rotated = (x * cos) + (rotate_half(x) * sin)
-        return x_rotated
+    # Split-half (NeoX/Llama style): (x[:d/2], x[d/2:])
+    # This matches llama's apply_rotary_pos_emb logic.
+    x_rotated = (x * cos) + (rotate_half(x) * sin)
+    return x_rotated
 
 
 class GlmMoeDsaIndexer(nn.Module):
@@ -159,8 +140,6 @@ class GlmMoeDsaIndexer(nn.Module):
         self.weights_proj = nn.Linear(self.hidden_size, self.n_heads, bias=False)
         self.softmax_scale = self.head_dim**-0.5
 
-        self.indexer_rope_interleave = config.indexer_rope_interleave
-
         # Indexer maintains its own key cache (not in DynamicCache, which is sized for attention layers only)
         self._cached_keys: torch.Tensor | None = None
 
@@ -196,21 +175,18 @@ class GlmMoeDsaIndexer(nn.Module):
         """
         batch_size, seq_len, _ = hidden_states.shape
         cos, sin = position_embeddings
-        rope_interleave = self.indexer_rope_interleave
 
         # === Queries ===
         q = self.wq_b(q_resid)  # [B, S, H*D]
         q = q.view(batch_size, seq_len, self.n_heads, self.head_dim)  # [B, S, H, D]
         q_pe, q_nope = torch.split(q, [self.qk_rope_head_dim, self.head_dim - self.qk_rope_head_dim], dim=-1)
-        q_pe = apply_rotary_pos_emb(q_pe, cos, sin, interleaved=rope_interleave, unsqueeze_dim=2)  # [B, S, H, rope_D]
+        q_pe = apply_rotary_pos_emb(q_pe, cos, sin, unsqueeze_dim=2)  # [B, S, H, rope_D]
         q = torch.cat([q_pe, q_nope], dim=-1)  # [B, S, H, D]
 
         # === Keys ===
         k = self.k_norm(self.wk(hidden_states))  # [B, S, D]
         k_pe, k_nope = torch.split(k, [self.qk_rope_head_dim, self.head_dim - self.qk_rope_head_dim], dim=-1)
-        k_pe = apply_rotary_pos_emb(k_pe.unsqueeze(2), cos, sin, interleaved=rope_interleave, unsqueeze_dim=2).squeeze(
-            2
-        )  # [B, S, rope_D]
+        k_pe = apply_rotary_pos_emb(k_pe.unsqueeze(2), cos, sin, unsqueeze_dim=2).squeeze(2)  # [B, S, rope_D]
         k = torch.cat([k_pe, k_nope], dim=-1)  # [B, S, D]
 
         # === Key cache (managed by the indexer, not DynamicCache) ===
@@ -356,7 +332,7 @@ class GlmMoeDsaAttention(nn.Module):
         query_states = query_states.view(batch_size, seq_length, self.num_heads, self.qk_head_dim).transpose(1, 2)
         # Split nope/rope, apply RoPE, recombine — layout: [B, H, S, D]
         q_nope, q_pe = torch.split(query_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-        q_pe = apply_rotary_pos_emb(q_pe, cos, sin, unsqueeze_dim=1)  # interleaved=True, BHSD format
+        q_pe = apply_rotary_pos_emb(q_pe, cos, sin, unsqueeze_dim=1)  # BHSD format
 
         # ===== KV path =====
         compressed_kv = self.kv_a_proj_with_mqa(hidden_states)  # [B, S, kv_rank + rope_D]
@@ -365,7 +341,7 @@ class GlmMoeDsaAttention(nn.Module):
 
         # RoPE on k_pe (single-head rope stream)
         k_pe = k_pe.view(batch_size, 1, seq_length, self.qk_rope_head_dim)  # [B, 1, S, rope_D]
-        k_pe = apply_rotary_pos_emb(k_pe, cos, sin, unsqueeze_dim=1)  # interleaved=True, BHSD format
+        k_pe = apply_rotary_pos_emb(k_pe, cos, sin, unsqueeze_dim=1)  # BHSD format
 
         # ===== Indexer (DSA sparse mask) =====
         # attention_mask is [B, 1, S, T] (4D) but indexer works with [B, S, T] (3D)
