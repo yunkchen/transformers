@@ -36,8 +36,10 @@ from ...modeling_outputs import (
     TokenClassifierOutput,
 )
 from ...modeling_utils import PreTrainedModel
+from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
-from ...utils import ModelOutput, auto_docstring, logging
+from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging
+from ...utils.generic import check_model_inputs
 from .configuration_big_bird import BigBirdConfig
 
 
@@ -157,8 +159,8 @@ class BigBirdSelfAttention(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         past_key_values=None,
-        output_attentions=False,
         cache_position=None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         batch_size, seq_length, _ = hidden_states.shape
         query_layer = (
@@ -250,9 +252,10 @@ class BigBirdBlockSparseAttention(nn.Module):
         to_mask=None,
         from_blocked_mask=None,
         to_blocked_mask=None,
-        output_attentions=None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         # Currently this `class` can't be used in decoder.
+        output_attentions = kwargs.get("output_attentions", False)
 
         batch_size, seqlen, _ = hidden_states.size()
         to_seq_length = from_seq_length = seqlen
@@ -1173,7 +1176,6 @@ class BigBirdAttention(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         past_key_values=None,
-        output_attentions=False,
         # block_sparse config
         band_mask=None,
         from_mask=None,
@@ -1181,6 +1183,7 @@ class BigBirdAttention(nn.Module):
         from_blocked_mask=None,
         to_blocked_mask=None,
         cache_position=None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         # fp16 compatibility
         if band_mask is not None:
@@ -1196,19 +1199,18 @@ class BigBirdAttention(nn.Module):
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
                 past_key_values=past_key_values,
-                output_attentions=output_attentions,
                 cache_position=cache_position,
+                **kwargs,
             )
         else:
             if encoder_hidden_states is not None:
                 raise ValueError("BigBird cannot be used as a decoder when config.attention_type != 'original_full'")
             self_outputs = self.self(
-                hidden_states, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
+                hidden_states, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, **kwargs
             )
 
         attention_output = self.output(self_outputs[0], hidden_states)
-        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
-        return outputs
+        return attention_output, self_outputs[1]
 
 
 # Copied from transformers.models.bert.modeling_bert.BertIntermediate with Bert->BigBird
@@ -1284,26 +1286,24 @@ class BigBirdLayer(GradientCheckpointingLayer):
         to_mask=None,
         blocked_encoder_mask=None,
         past_key_values=None,
-        output_attentions=False,
         cache_position=None,
-    ):
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
-        self_attention_outputs = self.attention(
+        attention_output, _ = self.attention(
             hidden_states,
             attention_mask=attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
             band_mask=band_mask,
             from_mask=from_mask,
             to_mask=to_mask,
             from_blocked_mask=blocked_encoder_mask,
             to_blocked_mask=blocked_encoder_mask,
             cache_position=cache_position,
+            **kwargs,
         )
-        attention_output = self_attention_outputs[0]
-        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
         if self.is_decoder and encoder_hidden_states is not None:
             if not hasattr(self, "crossattention"):
@@ -1312,22 +1312,20 @@ class BigBirdLayer(GradientCheckpointingLayer):
                     " cross-attention layers by setting `config.add_cross_attention=True`"
                 )
 
-            cross_attention_outputs = self.crossattention(
+            attention_output, _ = self.crossattention(
                 attention_output,
                 attention_mask=encoder_attention_mask,
                 encoder_hidden_states=encoder_hidden_states,
                 past_key_values=past_key_values,
-                output_attentions=output_attentions,
                 cache_position=cache_position,
+                **kwargs,
             )
-            attention_output = cross_attention_outputs[0]
-            outputs = outputs + cross_attention_outputs[1:]  # add cross attentions if we output attention weights
 
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
 
-        return (layer_output,) + outputs
+        return layer_output
 
     def feed_forward_chunk(self, attention_output):
         intermediate_output = self.intermediate(attention_output)
@@ -1366,19 +1364,13 @@ class BigBirdEncoder(nn.Module):
         encoder_attention_mask=None,
         past_key_values=None,
         use_cache=None,
-        output_attentions=False,
-        output_hidden_states=False,
         band_mask=None,
         from_mask=None,
         to_mask=None,
         blocked_encoder_mask=None,
-        return_dict=True,
         cache_position=None,
-    ) -> BaseModelOutputWithPastAndCrossAttentions | tuple:
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attentions = () if output_attentions else None
-        all_cross_attentions = () if output_attentions and self.config.add_cross_attention else None
-
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutputWithPastAndCrossAttentions:
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
@@ -1389,51 +1381,24 @@ class BigBirdEncoder(nn.Module):
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
 
-        for i, layer_module in enumerate(self.layer):
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-
-            layer_outputs = layer_module(
+        for layer_module in self.layer:
+            hidden_states = layer_module(
                 hidden_states,
-                attention_mask,
-                encoder_hidden_states,
-                encoder_attention_mask,
-                band_mask,
-                from_mask,
-                to_mask,
-                blocked_encoder_mask,
-                past_key_values,
-                output_attentions,
-                cache_position,
+                attention_mask=attention_mask,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                band_mask=band_mask,
+                from_mask=from_mask,
+                to_mask=to_mask,
+                blocked_encoder_mask=blocked_encoder_mask,
+                past_key_values=past_key_values,
+                cache_position=cache_position,
+                **kwargs,
             )
 
-            hidden_states = layer_outputs[0]
-            if output_attentions:
-                all_self_attentions = all_self_attentions + (layer_outputs[1],)
-                if self.config.add_cross_attention:
-                    all_cross_attentions = all_cross_attentions + (layer_outputs[2],)
-
-        if output_hidden_states:
-            all_hidden_states = all_hidden_states + (hidden_states,)
-
-        if not return_dict:
-            return tuple(
-                v
-                for v in [
-                    hidden_states,
-                    past_key_values,
-                    all_hidden_states,
-                    all_self_attentions,
-                    all_cross_attentions,
-                ]
-                if v is not None
-            )
         return BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attentions,
-            cross_attentions=all_cross_attentions,
         )
 
 
@@ -1512,6 +1477,10 @@ class BigBirdPreTrainedModel(PreTrainedModel):
     config: BigBirdConfig
     base_model_prefix = "bert"
     supports_gradient_checkpointing = True
+    _can_record_outputs = {
+        "hidden_states": BigBirdLayer,
+        "attentions": (BigBirdSelfAttention, BigBirdBlockSparseAttention),
+    }
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -1633,6 +1602,8 @@ class BigBirdModel(BigBirdPreTrainedModel):
         self.attention_type = value
         self.encoder.set_attention_type(value)
 
+    @check_model_inputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1645,22 +1616,17 @@ class BigBirdModel(BigBirdPreTrainedModel):
         encoder_attention_mask: torch.FloatTensor | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.Tensor | None = None,
-        **kwargs,  # NOOP kwargs, for now
-    ) -> BaseModelOutputWithPoolingAndCrossAttentions | tuple[torch.FloatTensor]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutputWithPoolingAndCrossAttentions:
         if self.config.is_decoder:
             use_cache = use_cache if use_cache is not None else self.config.use_cache
         else:
             use_cache = False
+        if kwargs.get("output_attentions") is None:
+            kwargs["output_attentions"] = self.config.output_attentions
+        if kwargs.get("output_hidden_states") is None:
+            kwargs["output_hidden_states"] = self.config.output_hidden_states
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -1765,23 +1731,21 @@ class BigBirdModel(BigBirdPreTrainedModel):
             past_key_values_length=past_key_values_length,
         )
 
-        encoder_outputs = self.encoder(
+        encoder_outputs: BaseModelOutputWithPastAndCrossAttentions = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_extended_attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             band_mask=band_mask,
             from_mask=from_mask,
             to_mask=to_mask,
             blocked_encoder_mask=blocked_encoder_mask,
-            return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
-        sequence_output = encoder_outputs[0]
+        sequence_output = encoder_outputs.last_hidden_state
 
         pooler_output = self.activation(self.pooler(sequence_output[:, 0, :])) if (self.pooler is not None) else None
 
@@ -1790,16 +1754,10 @@ class BigBirdModel(BigBirdPreTrainedModel):
             # unpad `sequence_output` because the calling function is expecting a length == input_ids.size(1)
             sequence_output = sequence_output[:, :-padding_len]
 
-        if not return_dict:
-            return (sequence_output, pooler_output) + encoder_outputs[1:]
-
         return BaseModelOutputWithPoolingAndCrossAttentions(
             last_hidden_state=sequence_output,
             pooler_output=pooler_output,
             past_key_values=encoder_outputs.past_key_values,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-            cross_attentions=encoder_outputs.cross_attentions,
         )
 
     @staticmethod
@@ -1906,6 +1864,7 @@ class BigBirdForPreTraining(BigBirdPreTrainedModel):
         self.cls.predictions.decoder = new_embeddings
         self.cls.predictions.bias = new_embeddings.bias
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1916,11 +1875,8 @@ class BigBirdForPreTraining(BigBirdPreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.FloatTensor | None = None,
         next_sentence_label: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> BigBirdForPreTrainingOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BigBirdForPreTrainingOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
@@ -1949,20 +1905,17 @@ class BigBirdForPreTraining(BigBirdPreTrainedModel):
         >>> prediction_logits = outputs.prediction_logits
         >>> seq_relationship_logits = outputs.seq_relationship_logits
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        sequence_output, pooled_output = outputs[:2]
+        sequence_output = outputs.last_hidden_state
+        pooled_output = outputs.pooler_output
         prediction_scores, seq_relationship_score = self.cls(sequence_output, pooled_output)
 
         total_loss = None
@@ -1973,10 +1926,6 @@ class BigBirdForPreTraining(BigBirdPreTrainedModel):
         if next_sentence_label is not None and total_loss is not None:
             next_sentence_loss = loss_fct(seq_relationship_score.view(-1, 2), next_sentence_label.view(-1))
             total_loss = total_loss + next_sentence_loss
-
-        if not return_dict:
-            output = (prediction_scores, seq_relationship_score) + outputs[2:]
-            return ((total_loss,) + output) if total_loss is not None else output
 
         return BigBirdForPreTrainingOutput(
             loss=total_loss,
@@ -2016,6 +1965,7 @@ class BigBirdForMaskedLM(BigBirdPreTrainedModel):
         self.cls.predictions.decoder = new_embeddings
         self.cls.predictions.bias = new_embeddings.bias
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2027,11 +1977,8 @@ class BigBirdForMaskedLM(BigBirdPreTrainedModel):
         encoder_hidden_states: torch.FloatTensor | None = None,
         encoder_attention_mask: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> MaskedLMOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> MaskedLMOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
@@ -2079,9 +2026,7 @@ class BigBirdForMaskedLM(BigBirdPreTrainedModel):
         1.99
         ```
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -2089,22 +2034,16 @@ class BigBirdForMaskedLM(BigBirdPreTrainedModel):
             inputs_embeds=inputs_embeds,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        sequence_output = outputs[0]
+        sequence_output = outputs.last_hidden_state
         prediction_scores = self.cls(sequence_output)
 
         masked_lm_loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()  # -100 index = padding token
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
-
-        if not return_dict:
-            output = (prediction_scores,) + outputs[2:]
-            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
 
         return MaskedLMOutput(
             loss=masked_lm_loss,
@@ -2144,6 +2083,7 @@ class BigBirdForCausalLM(BigBirdPreTrainedModel, GenerationMixin):
         self.cls.predictions.decoder = new_embeddings
         self.cls.predictions.bias = new_embeddings.bias
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2157,22 +2097,17 @@ class BigBirdForCausalLM(BigBirdPreTrainedModel, GenerationMixin):
         past_key_values: Cache | None = None,
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
         cache_position: torch.Tensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
-        **kwargs,
-    ) -> CausalLMOutputWithCrossAttentions | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> CausalLMOutputWithCrossAttentions:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the left-to-right language modeling loss (next word prediction). Indices should be in
             `[-100, 0, ..., config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are
             ignored (masked), the loss is only computed for the tokens with labels n `[0, ..., config.vocab_size]`.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -2182,14 +2117,11 @@ class BigBirdForCausalLM(BigBirdPreTrainedModel, GenerationMixin):
             encoder_attention_mask=encoder_attention_mask,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
 
-        hidden_states = outputs[0]
+        hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.cls(hidden_states[:, slice_indices, :])
@@ -2197,10 +2129,6 @@ class BigBirdForCausalLM(BigBirdPreTrainedModel, GenerationMixin):
         loss = None
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
 
         return CausalLMOutputWithCrossAttentions(
             loss=loss,
@@ -2253,6 +2181,7 @@ class BigBirdForSequenceClassification(BigBirdPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2262,11 +2191,8 @@ class BigBirdForSequenceClassification(BigBirdPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> SequenceClassifierOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> SequenceClassifierOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
@@ -2308,20 +2234,16 @@ class BigBirdForSequenceClassification(BigBirdPreTrainedModel):
         1.13
         ```
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        sequence_output = outputs[0]
+        sequence_output = outputs.last_hidden_state
         logits = self.classifier(sequence_output)
 
         loss = None
@@ -2347,10 +2269,6 @@ class BigBirdForSequenceClassification(BigBirdPreTrainedModel):
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
 
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
         return SequenceClassifierOutput(
             loss=loss,
             logits=logits,
@@ -2371,6 +2289,7 @@ class BigBirdForMultipleChoice(BigBirdPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2380,11 +2299,8 @@ class BigBirdForMultipleChoice(BigBirdPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> MultipleChoiceModelOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> MultipleChoiceModelOutput:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size, num_choices, sequence_length)`):
             Indices of input sequence tokens in the vocabulary.
@@ -2415,7 +2331,6 @@ class BigBirdForMultipleChoice(BigBirdPreTrainedModel):
             num_choices-1]` where `num_choices` is the size of the second dimension of the input tensors. (See
             `input_ids` above)
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         num_choices = input_ids.shape[1] if input_ids is not None else inputs_embeds.shape[1]
 
         input_ids = input_ids.view(-1, input_ids.size(-1)) if input_ids is not None else None
@@ -2428,18 +2343,16 @@ class BigBirdForMultipleChoice(BigBirdPreTrainedModel):
             else None
         )
 
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        pooled_output = outputs[1]
+        pooled_output = outputs.pooler_output
 
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
@@ -2449,10 +2362,6 @@ class BigBirdForMultipleChoice(BigBirdPreTrainedModel):
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(reshaped_logits, labels)
-
-        if not return_dict:
-            output = (reshaped_logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
 
         return MultipleChoiceModelOutput(
             loss=loss,
@@ -2478,6 +2387,7 @@ class BigBirdForTokenClassification(BigBirdPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2487,29 +2397,22 @@ class BigBirdForTokenClassification(BigBirdPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> TokenClassifierOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> TokenClassifierOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        sequence_output = outputs[0]
+        sequence_output = outputs.last_hidden_state
 
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
@@ -2518,10 +2421,6 @@ class BigBirdForTokenClassification(BigBirdPreTrainedModel):
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
 
         return TokenClassifierOutput(
             loss=loss,
@@ -2568,6 +2467,7 @@ class BigBirdForQuestionAnswering(BigBirdPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -2579,11 +2479,8 @@ class BigBirdForQuestionAnswering(BigBirdPreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         start_positions: torch.LongTensor | None = None,
         end_positions: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
-    ) -> BigBirdForQuestionAnsweringModelOutput | tuple[torch.FloatTensor]:
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BigBirdForQuestionAnsweringModelOutput:
         r"""
         question_lengths (`torch.LongTensor` of shape `(batch_size, 1)`, *optional*):
             The lengths of the questions in the batch.
@@ -2625,8 +2522,6 @@ class BigBirdForQuestionAnswering(BigBirdPreTrainedModel):
         >>> loss = outputs.loss
         ```
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         seqlen = input_ids.size(1) if input_ids is not None else inputs_embeds.size(1)
 
         if question_lengths is None and input_ids is not None:
@@ -2643,18 +2538,16 @@ class BigBirdForQuestionAnswering(BigBirdPreTrainedModel):
             logits_mask[:, 0] = False
             logits_mask.unsqueeze_(2)
 
-        outputs = self.bert(
+        outputs: BaseModelOutputWithPoolingAndCrossAttentions = self.bert(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
-        sequence_output = outputs[0]
+        sequence_output = outputs.last_hidden_state
         logits = self.qa_classifier(sequence_output)
 
         if logits_mask is not None:
@@ -2681,10 +2574,6 @@ class BigBirdForQuestionAnswering(BigBirdPreTrainedModel):
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
             total_loss = (start_loss + end_loss) / 2
-
-        if not return_dict:
-            output = (start_logits, end_logits) + outputs[2:]
-            return ((total_loss,) + output) if total_loss is not None else output
 
         return BigBirdForQuestionAnsweringModelOutput(
             loss=total_loss,
