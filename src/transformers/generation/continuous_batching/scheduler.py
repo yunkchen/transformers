@@ -208,7 +208,6 @@ class Scheduler(ABC):
 
         for state in candidates:
             num_free_blocks = self.cache.get_num_free_blocks()
-            print(f"Trying to schedule request {state.request_id} w/ state {state.status}: {num_free_blocks = }")
             # If we are out the safety margin, we only accept decoding requests or the first prefill request
             outside_safety_margin = num_free_blocks < safety_margins
             if outside_safety_margin and scheduled_requests and state.status != RequestStatus.DECODING:
@@ -231,7 +230,6 @@ class Scheduler(ABC):
             request_len = min(len(request_tokens), token_budget)
             # Check there will be enough cache for the new tokens
             allocation_successful = self._allocate_blocks_if_needed(state, request_len)
-            print(f"{allocation_successful = } {request_len = } {cache_needed = } {cache_budget = } {num_free_blocks = }")
 
             # If the allocation would not be successful, we move on to the next request
             if not allocation_successful:
@@ -272,7 +270,6 @@ class Scheduler(ABC):
             # Early exit of the loop if we have no budget left
             if token_budget == 0 or cache_budget == 0:
                 break
-        print(f"{len(scheduled_requests) = } {one_allocation_failed = } {token_budget = } {cache_budget = }")
 
         return scheduled_requests, one_allocation_failed
 
