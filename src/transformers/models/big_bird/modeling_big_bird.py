@@ -254,9 +254,6 @@ class BigBirdBlockSparseAttention(nn.Module):
         to_blocked_mask=None,
         **kwargs: Unpack[TransformersKwargs],
     ):
-        # Currently this `class` can't be used in decoder.
-        output_attentions = kwargs.get("output_attentions", False)
-
         batch_size, seqlen, _ = hidden_states.size()
         to_seq_length = from_seq_length = seqlen
         from_block_size = to_block_size = self.block_size
@@ -303,7 +300,6 @@ class BigBirdBlockSparseAttention(nn.Module):
             seed=self.seed,
             plan_from_length=None,
             plan_num_rand_blocks=None,
-            output_attentions=output_attentions,
         )
 
         context_layer = context_layer.contiguous().view(batch_size, from_seq_length, -1)
@@ -346,7 +342,6 @@ class BigBirdBlockSparseAttention(nn.Module):
         seed,
         plan_from_length,
         plan_num_rand_blocks,
-        output_attentions,
     ):
         # BigBird block-sparse attention as suggested in paper
 
@@ -653,46 +648,28 @@ class BigBirdBlockSparseAttention(nn.Module):
         context_layer = torch.transpose(context_layer, 1, 2)
 
         # this is just for visualizing; forward pass doesn't depend on following code
-        if output_attentions:
-            # TODO(PVP): need to verify if below code is correct
-            attention_probs = torch.zeros(
-                bsz, n_heads, from_seq_len, to_seq_len, dtype=torch.float, device=context_layer.device
-            )
+        # TODO(PVP): need to verify if below code is correct
+        attention_probs = torch.zeros(
+            bsz, n_heads, from_seq_len, to_seq_len, dtype=context_layer.dtype, device=context_layer.device
+        )
 
-            # 1st query block
-            # corresponding to `first_context_layer`
-            attention_probs[:, :, :from_block_size, :] = first_attn_weights  # all keys global
+        # 1st query block
+        # corresponding to `first_context_layer`
+        attention_probs[:, :, :from_block_size, :] = first_attn_weights  # all keys global
 
-            # 2nd query block
-            # corresponding to `second_context_layer`
-            attention_probs[:, :, from_block_size : 2 * from_block_size, : 3 * to_block_size] = second_attn_weights[
-                :, :, :, : 3 * to_block_size
-            ]  # 1st three key blocks (global + sliding)
-            attention_probs[:, :, from_block_size : 2 * from_block_size, -to_block_size:] = second_attn_weights[
-                :, :, :, 3 * to_block_size : 4 * to_block_size
-            ]  # last key block (global)
-            # random keys
-            for p1, i1, w1 in zip(range(bsz), rand_attn, second_attn_weights):
-                # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
-                for p2, i2, w2 in zip(range(n_heads), i1, w1):
-                    # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
-                    attn_probs_view = attention_probs.view(
-                        bsz,
-                        n_heads,
-                        from_seq_len // from_block_size,
-                        from_block_size,
-                        to_seq_len // to_block_size,
-                        to_block_size,
-                    )
-                    right_slice = w2[:, 4 * to_block_size :]
-                    attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(
-                        from_block_size, n_rand_blocks, to_block_size
-                    )
-
-            # Middle query blocks
-            # corresponding to `context_layer`
-            # sliding keys
-            for q_idx in range(from_seq_len // from_block_size - 4):
+        # 2nd query block
+        # corresponding to `second_context_layer`
+        attention_probs[:, :, from_block_size : 2 * from_block_size, : 3 * to_block_size] = second_attn_weights[
+            :, :, :, : 3 * to_block_size
+        ]  # 1st three key blocks (global + sliding)
+        attention_probs[:, :, from_block_size : 2 * from_block_size, -to_block_size:] = second_attn_weights[
+            :, :, :, 3 * to_block_size : 4 * to_block_size
+        ]  # last key block (global)
+        # random keys
+        for p1, i1, w1 in zip(range(bsz), rand_attn, second_attn_weights):
+            # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
+            for p2, i2, w2 in zip(range(n_heads), i1, w1):
+                # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
                 attn_probs_view = attention_probs.view(
                     bsz,
                     n_heads,
@@ -700,51 +677,40 @@ class BigBirdBlockSparseAttention(nn.Module):
                     from_block_size,
                     to_seq_len // to_block_size,
                     to_block_size,
-                )[:, :, 2:-2, :, 1:-1, :]
-                right_slice = attn_weights[:, :, q_idx, :, to_block_size : 4 * to_block_size]
-                attn_probs_view[:, :, q_idx, :, q_idx : q_idx + 3, :] = right_slice.view(
-                    bsz, n_heads, from_block_size, 3, to_block_size
-                )  # inner_band_product
-            # global keys (corresponding to 1st key block)
-            attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, :to_block_size] = attn_weights[
-                :, :, :, :, :to_block_size
-            ].view(bsz, n_heads, -1, to_block_size)  # first_band_product
-            # global keys (corresponding to last key block)
-            attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, -to_block_size:] = attn_weights[
-                :, :, :, :, -to_block_size:
-            ].view(bsz, n_heads, -1, to_block_size)  # last_band_product
-            # random keys
-            for p1, i1, w1 in zip(range(bsz), rand_attn, attn_weights):
-                # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
-                for p2, i2, w2 in zip(range(n_heads), i1, w1):
-                    # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
-                    for q_idx in range(1, len(i2) - 1):
-                        attn_probs_view = attention_probs.view(
-                            bsz,
-                            n_heads,
-                            from_seq_len // from_block_size,
-                            from_block_size,
-                            to_seq_len // to_block_size,
-                            to_block_size,
-                        )
-                        right_slice = w2[q_idx - 1, :, 4 * to_block_size : -to_block_size]
-                        attn_probs_view[p1, p2, q_idx + 1, :, i2[q_idx]] = right_slice.view(
-                            from_block_size, n_rand_blocks, to_block_size
-                        )
+                )
+                right_slice = w2[:, 4 * to_block_size :]
+                attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
 
-            # Second-last query block
-            # corresponding to `second_last_context_layer`
-            attention_probs[:, :, -2 * from_block_size : -from_block_size, :to_block_size] = second_last_attn_weights[
-                :, :, :, :to_block_size
-            ]  # 1st key block (global)
-            attention_probs[:, :, -2 * from_block_size : -from_block_size, -3 * to_block_size :] = (
-                second_last_attn_weights[:, :, :, to_block_size : 4 * to_block_size]
-            )  # last three blocks (global + sliding)
-            # random keys
-            for p1, i1, w1 in zip(range(bsz), rand_attn, second_last_attn_weights):
-                # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
-                for p2, i2, w2 in zip(range(n_heads), i1, w1):
-                    # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
+        # Middle query blocks
+        # corresponding to `context_layer`
+        # sliding keys
+        for q_idx in range(from_seq_len // from_block_size - 4):
+            attn_probs_view = attention_probs.view(
+                bsz,
+                n_heads,
+                from_seq_len // from_block_size,
+                from_block_size,
+                to_seq_len // to_block_size,
+                to_block_size,
+            )[:, :, 2:-2, :, 1:-1, :]
+            right_slice = attn_weights[:, :, q_idx, :, to_block_size : 4 * to_block_size]
+            attn_probs_view[:, :, q_idx, :, q_idx : q_idx + 3, :] = right_slice.view(
+                bsz, n_heads, from_block_size, 3, to_block_size
+            )  # inner_band_product
+        # global keys (corresponding to 1st key block)
+        attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, :to_block_size] = attn_weights[
+            :, :, :, :, :to_block_size
+        ].view(bsz, n_heads, -1, to_block_size)  # first_band_product
+        # global keys (corresponding to last key block)
+        attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, -to_block_size:] = attn_weights[
+            :, :, :, :, -to_block_size:
+        ].view(bsz, n_heads, -1, to_block_size)  # last_band_product
+        # random keys
+        for p1, i1, w1 in zip(range(bsz), rand_attn, attn_weights):
+            # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
+            for p2, i2, w2 in zip(range(n_heads), i1, w1):
+                # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
+                for q_idx in range(1, len(i2) - 1):
                     attn_probs_view = attention_probs.view(
                         bsz,
                         n_heads,
@@ -753,17 +719,38 @@ class BigBirdBlockSparseAttention(nn.Module):
                         to_seq_len // to_block_size,
                         to_block_size,
                     )
-                    right_slice = w2[:, 4 * to_block_size :]
-                    attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(
+                    right_slice = w2[q_idx - 1, :, 4 * to_block_size : -to_block_size]
+                    attn_probs_view[p1, p2, q_idx + 1, :, i2[q_idx]] = right_slice.view(
                         from_block_size, n_rand_blocks, to_block_size
                     )
 
-            # last query block
-            # corresponding to `last_context_layer`
-            attention_probs[:, :, -from_block_size:, :] = last_attn_weights  # all keys global
+        # Second-last query block
+        # corresponding to `second_last_context_layer`
+        attention_probs[:, :, -2 * from_block_size : -from_block_size, :to_block_size] = second_last_attn_weights[
+            :, :, :, :to_block_size
+        ]  # 1st key block (global)
+        attention_probs[:, :, -2 * from_block_size : -from_block_size, -3 * to_block_size :] = (
+            second_last_attn_weights[:, :, :, to_block_size : 4 * to_block_size]
+        )  # last three blocks (global + sliding)
+        # random keys
+        for p1, i1, w1 in zip(range(bsz), rand_attn, second_last_attn_weights):
+            # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
+            for p2, i2, w2 in zip(range(n_heads), i1, w1):
+                # p2, i2, w2 corresponds to head_dim i.e. following operation is done for each heads
+                attn_probs_view = attention_probs.view(
+                    bsz,
+                    n_heads,
+                    from_seq_len // from_block_size,
+                    from_block_size,
+                    to_seq_len // to_block_size,
+                    to_block_size,
+                )
+                right_slice = w2[:, 4 * to_block_size :]
+                attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
 
-        else:
-            attention_probs = None
+        # last query block
+        # corresponding to `last_context_layer`
+        attention_probs[:, :, -from_block_size:, :] = last_attn_weights  # all keys global
 
         return context_layer, attention_probs
 

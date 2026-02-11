@@ -203,7 +203,6 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
     def __init__(self, config, seed=None):
         super().__init__()
 
-        self.config = config
         self.max_seqlen = config.max_position_embeddings
         self.seed = seed
 
@@ -234,9 +233,6 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         to_blocked_mask=None,
         **kwargs: Unpack[TransformersKwargs],
     ):
-        # Currently this `class` can't be used in decoder.
-        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
-
         batch_size, seqlen, _ = hidden_states.size()
         to_seq_length = from_seq_length = seqlen
         from_block_size = to_block_size = self.block_size
@@ -283,7 +279,6 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             seed=self.seed,
             plan_from_length=None,
             plan_num_rand_blocks=None,
-            output_attentions=output_attentions,
         )
 
         context_layer = context_layer.contiguous().view(batch_size, from_seq_length, -1)
@@ -326,7 +321,6 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
         seed,
         plan_from_length,
         plan_num_rand_blocks,
-        output_attentions,
     ):
         # BigBirdPegasus block-sparse attention as suggested in paper
 
@@ -664,9 +658,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                     to_block_size,
                 )
                 right_slice = w2[:, 4 * to_block_size :]
-                attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(
-                    from_block_size, n_rand_blocks, to_block_size
-                )
+                attn_probs_view[p1, p2, 1, :, i2[0]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
 
         # Middle query blocks
         # corresponding to `context_layer`
@@ -733,9 +725,7 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
                     to_block_size,
                 )
                 right_slice = w2[:, 4 * to_block_size :]
-                attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(
-                    from_block_size, n_rand_blocks, to_block_size
-                )
+                attn_probs_view[p1, p2, -2, :, i2[-1]] = right_slice.view(from_block_size, n_rand_blocks, to_block_size)
 
         # last query block
         # corresponding to `last_context_layer`
@@ -1243,7 +1233,7 @@ class BigBirdPegasusDecoderAttention(nn.Module):
         past_key_values: Cache | None = None,
         attention_mask: torch.Tensor | None = None,
         cache_position: torch.Tensor | None = None,
-        # TODO: we might need a refactor so that the different attention modules can get their specific kwargs
+        # TODO: we need a refactor so that the different attention modules can get their specific kwargs
         # ATM, we have mixed things encoder, decoder, and encoder-decoder attn
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -1427,6 +1417,7 @@ class BigBirdPegasusDecoderLayer(GradientCheckpointingLayer):
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_attention_mask: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
+        use_cache: bool | None = True,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
@@ -1822,10 +1813,12 @@ class BigBirdPegasusDecoder(BigBirdPegasusPreTrainedModel):
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
         elif input_ids is not None:
+            input = input_ids
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
         elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
+            input = inputs_embeds[:, :, -1]
         else:
             raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 

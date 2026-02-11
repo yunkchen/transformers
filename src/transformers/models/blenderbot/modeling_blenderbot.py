@@ -347,6 +347,7 @@ class BlenderbotDecoderLayer(GradientCheckpointingLayer):
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_attention_mask: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
+        use_cache: bool | None = True,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
@@ -660,7 +661,7 @@ class BlenderbotDecoder(BlenderbotPreTrainedModel):
                 if dropout_probability < self.layerdrop:
                     continue
 
-            hidden_states = decoder_layer(
+            layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask,
                 encoder_hidden_states,  # as a positional argument for gradient checkpointing
@@ -670,6 +671,7 @@ class BlenderbotDecoder(BlenderbotPreTrainedModel):
                 cache_position=cache_position,
                 **kwargs,
             )
+            hidden_states = layer_outputs[0] if isinstance(layer_outputs, tuple) else layer_outputs
 
         # add final layer norm
         hidden_states = self.layer_norm(hidden_states)
