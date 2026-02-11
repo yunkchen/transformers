@@ -14,16 +14,21 @@
 
 
 
+from collections.abc import Callable
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ...cache_utils import Cache
 from ...configuration_utils import PreTrainedConfig, layer_type_validation
 from ...modeling_flash_attention_utils import FlashAttentionKwargs
 from ...modeling_rope_utils import RopeParameters
+from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...models.llama.modeling_llama import rotate_half
 from ...processing_utils import Unpack
 from ...utils import logging
+from ...utils.generic import is_flash_attention_requested
 from ..deepseek_v3.modeling_deepseek_v3 import yarn_get_mscale
 from ..glm4_moe.modeling_glm4_moe import (
     Glm4MoeForCausalLM,
@@ -31,7 +36,10 @@ from ..glm4_moe.modeling_glm4_moe import (
     Glm4MoePreTrainedModel,
     Glm4MoeRMSNorm,
 )
-from ..glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteDecoderLayer
+from ..glm4_moe_lite.modeling_glm4_moe_lite import (
+    Glm4MoeLiteDecoderLayer,
+    eager_attention_forward,
+)
 
 
 logger = logging.get_logger(__name__)
@@ -499,7 +507,6 @@ class GlmMoeDsaAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
         batch_size, seq_length = hidden_states.shape[:-1]
         cos, sin = position_embeddings
-        is_prefill = seq_length > 1
 
         # ===== Query path =====
         if self.q_lora_rank is None:
@@ -518,9 +525,28 @@ class GlmMoeDsaAttention(nn.Module):
         k_compressed, k_pe = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         k_compressed = self.kv_a_layernorm(k_compressed)  # [B, S, kv_rank]
 
+        # Expand KV through kv_b_proj
+        kv_expanded = self.kv_b_proj(k_compressed)  # [B, S, H * (nope_D + v_D)]
+        kv_expanded = kv_expanded.view(batch_size, seq_length, self.num_heads, self.qk_nope_head_dim + self.v_head_dim)
+        k_nope, value_states = torch.split(kv_expanded, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+        k_nope = k_nope.transpose(1, 2)  # [B, H, S, nope_D]
+        value_states = value_states.transpose(1, 2)  # [B, H, S, v_D]
+
         # RoPE on k_pe (single-head rope stream)
         k_pe = k_pe.view(batch_size, 1, seq_length, self.qk_rope_head_dim)  # [B, 1, S, rope_D]
         k_pe = apply_rotary_pos_emb(k_pe, cos, sin, unsqueeze_dim=1)  # BHSD format
+        k_pe = k_pe.expand(-1, self.num_heads, -1, -1)  # [B, H, S, rope_D]
+
+        # Assemble full Q and K
+        query_states = torch.cat([q_nope, q_pe], dim=-1)  # [B, H, S, qk_head_dim]
+        key_states = torch.cat([k_nope, k_pe], dim=-1)  # [B, H, S, qk_head_dim]
+
+        # Cache update
+        if past_key_values is not None:
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
 
         # ===== Indexer (DSA sparse mask) =====
         # attention_mask is [B, 1, S, T] (4D) but indexer works with [B, S, T] (3D)
@@ -533,103 +559,45 @@ class GlmMoeDsaAttention(nn.Module):
             use_cache=past_key_values is not None,
         )  # [B, S, topk]
 
-        if is_prefill:
-            # ===== Prefill: expand KV, full MHA =====
-            kv_expanded = self.kv_b_proj(k_compressed)  # [B, S, H * (nope_D + v_D)]
-            kv_expanded = kv_expanded.view(batch_size, seq_length, self.num_heads, self.qk_nope_head_dim + self.v_head_dim)
-            k_nope, value_states = torch.split(kv_expanded, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-            k_nope = k_nope.transpose(1, 2)  # [B, H, S, nope_D]
-            value_states = value_states.transpose(1, 2)  # [B, H, S, v_D]
-
-            k_pe_expanded = k_pe.expand(-1, self.num_heads, -1, -1)  # [B, H, S, rope_D]
-
-            query_states = torch.cat([q_nope, q_pe], dim=-1)  # [B, H, S, qk_head_dim]
-            key_states = torch.cat([k_nope, k_pe_expanded], dim=-1)  # [B, H, S, qk_head_dim]
-
-            # Cache update (store expanded K/V)
-            if past_key_values is not None:
-                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-                key_states, value_states = past_key_values.update(
-                    key_states, value_states, self.layer_idx, cache_kwargs
-                )
-
-            # Attention scores
-            total_len = key_states.shape[2]
-            attn_weights = torch.einsum(
-                "bhsd,bhtd->bhst", query_states.float(), key_states.float()
-            ) * self.scaling  # [B, H, S, T]
-
-            # Build index_mask: -inf everywhere except selected top-k positions
-            index_mask = torch.full(
-                (batch_size, seq_length, total_len), float("-inf"),
-                device=hidden_states.device, dtype=attn_weights.dtype,
-            )
-            index_mask.scatter_(-1, topk_indices, 0.0)  # [B, S, T]
-            if attention_mask is not None:
-                causal_mask = attention_mask[:, :, :, :total_len]
-                index_mask = index_mask.unsqueeze(1) + causal_mask
-            else:
-                index_mask = index_mask.unsqueeze(1)
-
-            attn_weights = attn_weights + index_mask
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout if self.training else 0.0, training=self.training)
-
-            attn_output = torch.einsum("bhst,bhtd->bhsd", attn_weights, value_states)  # [B, H, S, v_D]
-
+        # Build combined DSA + causal mask: -inf everywhere except selected top-k positions
+        total_len = key_states.shape[2]
+        index_mask = torch.full(
+            (batch_size, seq_length, total_len), float("-inf"),
+            device=hidden_states.device, dtype=query_states.dtype,
+        )
+        index_mask.scatter_(-1, topk_indices, 0.0)  # [B, S, T]
+        index_mask = index_mask.unsqueeze(1)  # [B, 1, S, T]
+        if attention_mask is not None:
+            causal_mask = attention_mask[:, :, :, :total_len]
+            combined_mask = index_mask + causal_mask
         else:
-            # ===== Decode: absorbed MLA (Q absorbs wkv_b, avoid K expansion) =====
-            # Reference decode path:
-            #   wkv_b = wkv_b.view(H, nope_D+v_D, kv_rank)
-            #   q_nope' = einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :nope_D])  # absorb into Q
-            #   scores = (einsum("bshc,btc->bsht", q_nope', kv_cache) +
-            #             einsum("bshr,btr->bsht", q_pe, pe_cache)) * scale
-            #   output = einsum("bsht,btc->bshc", attn_weights, kv_cache)
-            #   output = einsum("bshc,hdc->bshd", output, wkv_b[:, -v_D:])
+            combined_mask = index_mask
 
-            # Cache compressed KV and k_pe (before expansion)
-            # For decode, we cache compressed representations and use absorbed attention
-            kv_expanded = self.kv_b_proj(k_compressed)  # still need for cache compatibility
-            kv_expanded = kv_expanded.view(batch_size, seq_length, self.num_heads, self.qk_nope_head_dim + self.v_head_dim)
-            k_nope, value_states = torch.split(kv_expanded, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
-            k_nope = k_nope.transpose(1, 2)
-            value_states = value_states.transpose(1, 2)
+        # Flash attention head_dim padding (qk_head_dim != v_head_dim)
+        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
+            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
 
-            k_pe_expanded = k_pe.expand(-1, self.num_heads, -1, -1)
-            key_states = torch.cat([k_nope, k_pe_expanded], dim=-1)
+        # ===== Attention via standard interface =====
+        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.config._attn_implementation, eager_attention_forward
+        )
 
-            if past_key_values is not None:
-                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-                key_states, value_states = past_key_values.update(
-                    key_states, value_states, self.layer_idx, cache_kwargs
-                )
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            combined_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            **kwargs,
+        )
 
-            query_states = torch.cat([q_nope, q_pe], dim=-1)
-            total_len = key_states.shape[2]
-            attn_weights = torch.einsum(
-                "bhsd,bhtd->bhst", query_states.float(), key_states.float()
-            ) * self.scaling
-
-            # Build index_mask
-            index_mask = torch.full(
-                (batch_size, 1, total_len), float("-inf"),
-                device=hidden_states.device, dtype=attn_weights.dtype,
-            )
-            index_mask.scatter_(-1, topk_indices, 0.0)  # [B, 1, T]
-            if attention_mask is not None:
-                causal_mask = attention_mask[:, :, :, :total_len]
-                index_mask = index_mask.unsqueeze(1) + causal_mask
-            else:
-                index_mask = index_mask.unsqueeze(1)
-
-            attn_weights = attn_weights + index_mask
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout if self.training else 0.0, training=self.training)
-
-            attn_output = torch.einsum("bhst,bhtd->bhsd", attn_weights, value_states)
+        if is_flash_attention_requested(self.config) and self.qk_head_dim != self.v_head_dim:
+            attn_output = attn_output[:, :, :, : self.v_head_dim]
 
         # ===== Output projection =====
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, -1).contiguous()
+        attn_output = attn_output.reshape(batch_size, seq_length, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
