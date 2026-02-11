@@ -145,6 +145,9 @@ class ContinuousBatchingIOs:
         sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, :max_batch_tokens + 1]
         self.carry_over_ids = self._bulk_input_tensor[6, :max_batch_tokens]  # only used for async API
 
+        # Last coefficient is set here and never will be touched again
+        self.output_ids.zero_()
+
         # For sequence length of KV, the entries in the dict depend on the model
         self.cumulative_seqlens_k: dict[str, torch.Tensor] = {}
         if self.cache.num_full_attention_groups:
@@ -221,10 +224,9 @@ class ContinuousBatchingIOs:
         self._bulk_input_tensor[:, :q_len+1].zero_()
         self.max_seqlen_q = 0
 
-        # Reset the logits indices and output ids (TODO: logits indices reset might be redundant)
-        self.logits_indices[:q_len].fill_(-1)
-        self.output_ids[:q_len].fill_(-1) # TODO: BUG: this should be useless
-        self.output_ids[-1] = 0  # TODO: BUG: this should be useless
+        # Reset the logits indices and output ids
+        self.logits_indices[:q_len].zero_()
+        self.output_ids[:q_len].zero_()
 
         # Reset the attributes that are either tensors or dict of tensors
         for layer_type in self.cumulative_seqlens_k:
