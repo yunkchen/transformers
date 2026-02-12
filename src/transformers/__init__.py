@@ -255,6 +255,7 @@ _import_structure = {
         "GPTQConfig",
         "HiggsConfig",
         "HqqConfig",
+        "MlxConfig",
         "Mxfp4Config",
         "QuantoConfig",
         "QuarkConfig",
@@ -759,6 +760,7 @@ if TYPE_CHECKING:
     from .utils.quantization_config import GPTQConfig as GPTQConfig
     from .utils.quantization_config import HiggsConfig as HiggsConfig
     from .utils.quantization_config import HqqConfig as HqqConfig
+    from .utils.quantization_config import MlxConfig as MlxConfig
     from .utils.quantization_config import QuantoConfig as QuantoConfig
     from .utils.quantization_config import QuarkConfig as QuarkConfig
     from .utils.quantization_config import SpQRConfig as SpQRConfig

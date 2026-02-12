@@ -121,6 +121,10 @@ _import_structure = {
         "grouped_mm_experts_forward",
         "use_experts_implementation",
     ],
+    "mlx_quantization": [
+        "MlxLinear",
+        "replace_with_mlx_linear",
+    ],
     "mxfp4": [
         "Mxfp4GptOssExperts",
         "convert_moe_packed_tensors",
@@ -266,6 +270,10 @@ if TYPE_CHECKING:
         batched_mm_experts_forward,
         grouped_mm_experts_forward,
         use_experts_implementation,
+    )
+    from .mlx_quantization import (
+        MlxLinear,
+        replace_with_mlx_linear,
     )
     from .mxfp4 import (
         Mxfp4GptOssExperts,
