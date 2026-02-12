@@ -18,8 +18,10 @@ from abc import ABC, abstractmethod
 from transformers import set_seed
 from transformers.integrations.tensor_parallel import _get_parameter_tp_plan
 from transformers.testing_utils import (
+    backend_device_count,
     is_tensor_parallel_test,
     is_torch_available,
+    torch_device,
 )
 from transformers.utils import is_torch_greater_or_equal
 
@@ -312,6 +314,12 @@ class TensorParallelTesterMixin(ABC):
         """Check and skip test if TP is not supported for this model/environment."""
         if not is_torch_greater_or_equal("2.9"):
             self.skipTest("Tensor parallel tests require torch >= 2.9")
+
+        if backend_device_count(torch_device) < self.tensor_parallel_size:
+            self.skipTest(
+                f"Tensor parallel tests require at least {self.tensor_parallel_size} accelerators, "
+                f"but only {backend_device_count(torch_device)} available"
+            )
 
         if not hasattr(self.model_tester, "causal_lm_class") or self.model_tester.causal_lm_class is None:
             self.skipTest("Model tester does not have causal_lm_class (not using CausalLMModelTester)")
