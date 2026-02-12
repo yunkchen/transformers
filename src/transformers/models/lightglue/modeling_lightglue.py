@@ -32,7 +32,7 @@ from ...modeling_flash_attention_utils import FlashAttentionKwargs
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring
-from ...utils.generic import can_return_tuple, merge_with_config_defaults
+from ...utils.generic import can_return_tuple
 from ...utils.output_capturing import capture_outputs
 from ..auto.modeling_auto import AutoModelForKeypointDetection
 from .configuration_lightglue import LightGlueConfig
@@ -861,7 +861,6 @@ class LightGlueForKeypointMatching(LightGluePreTrainedModel):
             all_attentions,
         )
 
-    @merge_with_config_defaults
     @capture_outputs
     @can_return_tuple
     @auto_docstring
