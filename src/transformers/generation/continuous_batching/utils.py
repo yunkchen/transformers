@@ -18,15 +18,28 @@ import torch
 from transformers.configuration_utils import PretrainedConfig
 
 
+class CudaGraphBuffer(dict):
+    """A fixed-size dict for CUDA graphs with LRU eviction when full."""
+
+    def __init__(self, max_size: int) -> None:
+        super().__init__()
+        self.max_size = max_size
+
+    def __setitem__(self, key, value) -> None:
+        if key not in self and len(self) >= self.max_size:
+            oldest_key = next(iter(self))
+            self.pop(oldest_key).reset()  # free GPU memory immediately
+        super().__setitem__(key, value)
+
+
 def attn_mask_is_needed(config: PretrainedConfig) -> bool:
     """Checks if attention mask is needed for the given (config)."""
     return config._attn_implementation in ["paged|eager", "paged|sdpa"]
 
 
-def pad_by_intervals(size: int, max_value: int, nb_intervals: int) -> int:
-    """Return the smallest multiple of (max_value) // (nb_intervals) greater than (size)."""
-    interval_size = max_value // nb_intervals
-    if interval_size == 0:
+def pad_to_interval(size: int, interval_size: int, max_value: int) -> int:
+    """Return the smallest multiple of (interval_size) >= (size), capped at (max_value)."""
+    if interval_size <= 0:
         return max_value
     padded = ceil(size / interval_size) * interval_size if size > 0 else interval_size
     return min(padded, max_value)

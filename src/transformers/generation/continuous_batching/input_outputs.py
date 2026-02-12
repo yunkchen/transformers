@@ -24,7 +24,7 @@ from transformers.configuration_utils import PretrainedConfig
 from ...utils.metrics import traced
 from .cache import PagedAttentionCache
 from .requests import TMP_TOKEN_ID, FutureRequestState
-from .utils import aligned_divide, attn_mask_is_needed, build_attention_mask
+from .utils import CudaGraphBuffer, aligned_divide, attn_mask_is_needed, build_attention_mask
 
 
 @dataclass
@@ -85,13 +85,19 @@ class ContinuousBatchingIOs:
     """
 
     def __init__(
-        self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
+        self,
+        cache: PagedAttentionCache,
+        config: PretrainedConfig,
+        device: torch.device,
+        model_dtype: torch.dtype,
+        max_graphs: int = 32,
     ) -> None:
         """Initialize the continuous batching I/O manager. Args:
          - cache: The [`PagedAttentionCache`] instance managing the KV cache. Meant to be unique.
          - config: The model's pretrained configuration.
          - device: The device to allocate tensors on. If the device is CPU, then the memory is pinned.
          - model_dtype: The data type for model computations.
+         - max_graphs: Maximum number of CUDA graphs to cache. Uses LRU eviction when full.
         """
         # Memoize attributes
         self.cache = cache
@@ -108,7 +114,7 @@ class ContinuousBatchingIOs:
         # Setup other accumulators
         self.requests_in_batch: list[FutureRequestState] = []
         self.req_id_to_new_token_position: dict[str, int] = {}  # only used for async API
-        self.graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
+        self.graphs: CudaGraphBuffer = CudaGraphBuffer(max_graphs)
         # Setup static tensors and compute stream
         self._setup_static_tensors()
         self._reset_static_tensors(full_reset=True)
@@ -437,10 +443,15 @@ class ContinuousBatchingIOs:
 class HostDeviceIOPair:
 
     def __init__(
-        self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
+        self,
+        cache: PagedAttentionCache,
+        config: PretrainedConfig,
+        device: torch.device,
+        model_dtype: torch.dtype,
+        max_graphs: int = 32,
     ) -> None:
-        self.host_io = ContinuousBatchingIOs(cache, config, torch.device("cpu"), model_dtype)
-        self.device_io = ContinuousBatchingIOs(cache, config, device, model_dtype)
+        self.host_io = ContinuousBatchingIOs(cache, config, torch.device("cpu"), model_dtype, max_graphs)
+        self.device_io = ContinuousBatchingIOs(cache, config, device, model_dtype, max_graphs)
         self.h2d_over = torch.cuda.Event()
         self.compute_over = torch.cuda.Event()
         self.d2h_over = torch.cuda.Event()
@@ -471,11 +482,16 @@ class ContinuousBatchingAsyncIOs:
     """
 
     def __init__(
-        self, cache: PagedAttentionCache, config: PretrainedConfig, device: torch.device, model_dtype: torch.dtype
+        self,
+        cache: PagedAttentionCache,
+        config: PretrainedConfig,
+        device: torch.device,
+        model_dtype: torch.dtype,
+        max_graphs: int = 32,
     ) -> None:
         # IO pairs used to avoid race conditions
         self.current_pair = 0
-        self.io_pairs = [HostDeviceIOPair(cache, config, device, model_dtype) for _ in range(2)]
+        self.io_pairs = [HostDeviceIOPair(cache, config, device, model_dtype, max_graphs) for _ in range(2)]
         # CUDA streams
         self.h2d_stream = torch.cuda.Stream(device=device)
         self.d2h_stream = torch.cuda.Stream(device=device)
@@ -545,7 +561,7 @@ class ContinuousBatchingAsyncIOs:
         return self.io_pairs[self.current_pair].device_io.output_ids
 
     @property
-    def graphs(self) -> dict[tuple[int, int], torch.cuda.CUDAGraph]:
+    def graphs(self) -> CudaGraphBuffer:
         return self.io_pairs[self.current_pair].device_io.graphs
 
     # The retrieve_device_outputs method is where the D2H transfer happens AND where we switch IO pair

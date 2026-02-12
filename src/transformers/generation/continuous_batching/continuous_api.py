@@ -33,7 +33,7 @@ from .cache import PagedAttentionCache
 from .input_outputs import ContinuousBatchingAsyncIOs, ContinuousBatchingIOs
 from .requests import GenerationOutput, RequestState, RequestStatus, logger
 from .scheduler import SCHEDULER_MAPPING, FIFOScheduler, Scheduler
-from .utils import attn_mask_is_needed, pad_by_intervals
+from .utils import attn_mask_is_needed, pad_to_interval
 
 
 """
@@ -42,21 +42,22 @@ generation goes on, there are two dimensions that change:
 - the number of queries tokens (Q), which can vary from batch to batch
 - the number of keys/values tokens (KV), which grows as the cache does
 
-To solve this, we slice along those dimensions to fixed lengths. The size of the slices is controlled by the variables
-num_x_padding_intervals: NUM_X_PADDING_INTERVALS means that we create at most NUM_X_PADDING_INTERVALS graphs for the X
-dimension. So if the maximum number of queries tokens is 1000, and NUM_Q_PADDING_INTERVALS is 4, we will slice the
-number of queries token by intervals of 1000 / 4 = 250 tokens, ie. to 250, 500, 750 or 1000 queries tokens.
+To solve this, we slice along those dimensions to fixed lengths. The size of the slices is controlled by interval sizes:
+- Q_PADDING_INTERVAL_SIZE: the padding granularity for queries (in tokens)
+- KV_PADDING_INTERVAL_SIZE: the padding granularity for KV cache (in tokens)
 
-Smaller slices means more granularity and thus less padding. But since each graph takes up space on the GPU and time to
-create, we don't want to many graphs. And since the size of the KV dimension is the number of queries tokens plus the
-number of tokens cached, dimension of KV is usually much larger than the dimension of Q. So we have more granularity
-for the KV dimension than the query dimension.
+For example, with Q_PADDING_INTERVAL_SIZE=64 and an actual query length of 100, we pad to 128 tokens.
 
-This variable used to be called NUM_X_CUDA_GRAPHS, but we renamed it to NUM_X_PADDING_INTERVALS because it is used for
-padding in the case of cuda graphs AND torch.compile.
+Smaller intervals mean finer granularity and thus less padding, but more unique graph signatures. Since graphs take
+memory and time to create, we use an LRU cache with a fixed size to limit memory usage. Good defaults:
+- Q: 64 tokens gives ~4 graphs for max_batch_tokens=256, which is a good balance
+- KV: 8192 tokens (256 blocks at block_size=32) gives reasonable granularity for large caches
+
+The maximum number of cached graphs is controlled by MAX_CACHED_GRAPHS (default 32), which uses LRU eviction.
 """
-NUM_Q_PADDING_INTERVALS = 4
-NUM_KV_PADDING_INTERVALS = 8
+Q_PADDING_INTERVAL_SIZE = 64
+KV_PADDING_INTERVAL_SIZE = 512 * 32  # 512 blocks of 32 tokens (interval size is in tokens for both Q and KV)
+MAX_CACHED_GRAPHS = 32
 
 
 # We cannot use `PreTrainedModel` for circular import reasons, so this helps keep track of the basic types
@@ -90,8 +91,9 @@ class ContinuousBatchProcessor:
         scheduler: Scheduler,
         manual_eviction: bool,
         use_cuda_graph: bool,
-        q_padding_intervals: int,
-        kv_padding_intervals: int,
+        q_padding_interval_size: int,
+        kv_padding_interval_size: int,
+        max_cached_graphs: int,
         use_async: bool,
     ) -> None:
         """Initialize the continuous batch processor.
@@ -109,6 +111,9 @@ class ContinuousBatchProcessor:
             manual_eviction: Whether to manually evict blocks from the cache
             use_cuda_graph: Whether to use cuda graphs or not during CB. Check the docstring at the top of the file for
                 more details.
+            q_padding_interval_size: Padding granularity for queries in tokens.
+            kv_padding_interval_size: Padding granularity for KV cache in tokens.
+            max_cached_graphs: Maximum number of CUDA graphs to cache. Uses LRU eviction when full.
         """
         self.cache = cache
         self.config = config
@@ -124,8 +129,9 @@ class ContinuousBatchProcessor:
         # Retrieve the size of the sliding window if there is one
         self.sliding_window = 1 if getattr(config, "sliding_window", None) is None else config.sliding_window
         # Cuda graphs for the generation step
-        self.q_padding_intervals = q_padding_intervals
-        self.kv_padding_intervals = kv_padding_intervals
+        self.q_padding_interval_size = q_padding_interval_size
+        self.kv_padding_interval_size = kv_padding_interval_size
+        self.max_cached_graphs = max_cached_graphs
         self.use_cuda_graph = use_cuda_graph
         # Compile-related arguments
         self.compile_config: CompileConfig | None = getattr(generation_config, "compile_config", None)
@@ -140,9 +146,9 @@ class ContinuousBatchProcessor:
         # Setup inputs and outputs
         self.use_async = use_async
         if self.use_async:
-            self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype)
+            self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype, max_cached_graphs)
         else:
-            self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype)
+            self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype, max_cached_graphs)
 
     def __repr__(self) -> str:
         return (
@@ -370,12 +376,9 @@ class ContinuousBatchProcessor:
         # If inputs are static sized, we find the padded sizes of the queries and keys/values
         if self._pad_inputs:
             actual_query_length, _, _, actual_read_sizes, _ = self.inputs_and_outputs.get_actual_lengths()
-            padded_q = pad_by_intervals(actual_query_length, self.max_batch_tokens, self.q_padding_intervals)
+            padded_q = pad_to_interval(actual_query_length, self.q_padding_interval_size, self.max_batch_tokens)
             max_read_index_size = max(actual_read_sizes)
-            # The space planned for query tokens will be added later, so we remove it from the space planned for KV
-            padded_read_index_size = pad_by_intervals(
-                max_read_index_size, self.cache.num_pages, self.kv_padding_intervals
-            )
+            padded_read_index_size = pad_to_interval(max_read_index_size, self.kv_padding_interval_size, self.cache.num_pages)
         else:
             padded_q, padded_read_index_size = 0, 0
         # Retrieve the model kwargs with or without padding
@@ -482,8 +485,9 @@ class ContinuousBatchingManager:
         generation_config: GenerationConfig,
         manual_eviction: bool = False,
         max_queue_size: int = 0,
-        num_q_padding_intervals: int = 0,
-        num_kv_padding_intervals: int = 0,
+        q_padding_interval_size: int = 0,
+        kv_padding_interval_size: int = 0,
+        max_cached_graphs: int = 0,
         allow_block_sharing: bool = True,
         use_async: bool | None = None,
     ) -> None:
@@ -493,8 +497,9 @@ class ContinuousBatchingManager:
             model: The language model for generation
             generation_config: Configuration for generation parameters
             max_queue_size: Maximum size of the request queue (0 = unlimited)
-            num_q_padding_intervals: (optional) Number of intervals used to pad the query dimension
-            num_kv_padding_intervals: (optional) Number of intervals used to pad the keys/values dimension
+            q_padding_interval_size: (optional) Padding granularity for queries in tokens. 0 uses default.
+            kv_padding_interval_size: (optional) Padding granularity for KV cache in tokens. 0 uses default.
+            max_cached_graphs: (optional) Maximum number of cached CUDA graphs. 0 uses default.
             allow_block_sharing: (optional) Whether to allow block sharing if the model has some full attention layers
             use_async: Whether to use async API or not. If None, will be automatically detected.
         """
@@ -530,8 +535,7 @@ class ContinuousBatchingManager:
         # Cuda graph behavior is determined below using either user-specified arguments or heuristics
         self.use_cuda_graph = self._decide_use_cuda_graphs(
             use_cuda_graph=getattr(generation_config, "use_cuda_graph", None),
-            num_q_padding_intervals=num_q_padding_intervals,
-            num_kv_padding_intervals=num_kv_padding_intervals,
+            user_specified_param=bool(q_padding_interval_size or kv_padding_interval_size or max_cached_graphs),
             compile_config=getattr(generation_config, "compile_config", None),
         )
         # If no behavior is given for the async API, it's turned on if cuda graphs are on and there is no attention mask
@@ -540,11 +544,10 @@ class ContinuousBatchingManager:
         else:
             self.use_async = self.use_cuda_graph and not attn_mask_is_needed(self.model.config)
 
-        # We set the number of padding intervals for Q and KV
-        self.q_padding_intervals = num_q_padding_intervals if num_q_padding_intervals > 0 else NUM_Q_PADDING_INTERVALS
-        self.kv_padding_intervals = (
-            num_kv_padding_intervals if num_kv_padding_intervals > 0 else NUM_KV_PADDING_INTERVALS
-        )
+        # Padding interval sizes for Q and KV (0 means use defaults)
+        self.q_padding_interval_size = q_padding_interval_size if q_padding_interval_size > 0 else Q_PADDING_INTERVAL_SIZE
+        self.kv_padding_interval_size = kv_padding_interval_size if kv_padding_interval_size > 0 else KV_PADDING_INTERVAL_SIZE
+        self.max_cached_graphs = max_cached_graphs if max_cached_graphs > 0 else MAX_CACHED_GRAPHS
 
         # Log probability generation is not supported yet (TODO)
         if self.log_prob_generation:
@@ -553,15 +556,12 @@ class ContinuousBatchingManager:
     def _decide_use_cuda_graphs(
         self,
         use_cuda_graph: bool | None,
-        num_q_padding_intervals: int,
-        num_kv_padding_intervals: int,
+        user_specified_param: int,
         compile_config: CompileConfig | None,
     ) -> bool:
         """Returns whether or not to use cuda graphs for continuous batching, depending on the following criteria:
         - (use_cuda_graph) which is the user choice
-        - (num_q_padding_intervals) or (num_kv_padding_intervals) which is used to pad inputs: if it was specified by
-            the user, it's probable they want to use cuda graphs so inputs need to be padded
-        - (compile_config): if compile is on, turn on cuda graphs unless the compile mode uses its own cudagraphs
+        - (user_specified_param): a boolean indicating if the user specified a parameter related to cuda graphs
         If none of the above criteria are met, we use a default heuristic based on the attention implementation: we turn
         on cuda graphs if and only if no attention mask is needed.
         """
@@ -573,8 +573,8 @@ class ContinuousBatchingManager:
         # If use_cuda_graph is specified, we follow the user's choice
         if use_cuda_graph is not None:
             return use_cuda_graph
-        # If a number of padding intervals was specified for either Q or KV, we activate cuda graphs
-        if num_q_padding_intervals > 0 or num_kv_padding_intervals > 0:
+        # If the user specified a parameter related to cuda graphs, we activate cuda graphs
+        if user_specified_param:
             return True
         # If a compile config was found, turn off cuda graphs if the compile config already uses them
         if compile_config is not None:
@@ -811,8 +811,9 @@ class ContinuousBatchingManager:
                 scheduler=scheduler(paged_attention_cache, self.manual_eviction),
                 manual_eviction=self.manual_eviction,
                 use_cuda_graph=self.use_cuda_graph,
-                q_padding_intervals=self.q_padding_intervals,
-                kv_padding_intervals=self.kv_padding_intervals,
+                q_padding_interval_size=self.q_padding_interval_size,
+                kv_padding_interval_size=self.kv_padding_interval_size,
+                max_cached_graphs=self.max_cached_graphs,
                 use_async=self.use_async,
             )
             self.batch_processor = batch_processor
@@ -883,19 +884,21 @@ class ContinuousMixin:
         generation_config: GenerationConfig | None = None,
         manual_eviction: bool = False,
         max_queue_size: int = 0,
-        num_q_cuda_graphs: int = 0,
-        num_kv_cuda_graphs: int = 0,
+        q_padding_interval_size: int = 0,
+        kv_padding_interval_size: int = 0,
         allow_block_sharing: bool = True,
         block: bool = True,
         timeout: float | None = None,
         use_async: bool | None = None,  # leave to None for automatic detection
+        max_cached_graphs: int = 0,
     ) -> Generator[ContinuousBatchingManager]:
         manager = self.init_continuous_batching(
             generation_config=generation_config,
             manual_eviction=manual_eviction,
             max_queue_size=max_queue_size,
-            num_q_padding_intervals=num_q_cuda_graphs,
-            num_kv_padding_intervals=num_kv_cuda_graphs,
+            q_padding_interval_size=q_padding_interval_size,
+            kv_padding_interval_size=kv_padding_interval_size,
+            max_cached_graphs=max_cached_graphs,
             allow_block_sharing=allow_block_sharing,
             use_async=use_async,
         )
@@ -914,10 +917,11 @@ class ContinuousMixin:
         generation_config: GenerationConfig | None = None,
         manual_eviction: bool = False,
         max_queue_size: int = 0,
-        num_q_padding_intervals: int = 0,
-        num_kv_padding_intervals: int = 0,
+        q_padding_interval_size: int = 0,
+        kv_padding_interval_size: int = 0,
         allow_block_sharing: bool = True,
         use_async: bool | None = None,
+        max_cached_graphs: int = 0,
     ) -> ContinuousBatchingManager:
         """Initialize a manager for continuous batching inference.
 
@@ -925,10 +929,11 @@ class ContinuousMixin:
             generation_config: An optional generation configuration, which may contain a CompileConfig object
             manual_eviction: Whether to manually evict requests from the cache
             max_queue_size: Maximum size of the input request queue
-            num_q_padding_intervals: Number of intervals used to pad the query dimension
-            num_kv_padding_intervals: Number of intervals used to pad the keys/values dimension
+            q_padding_interval_size: Padding granularity for queries in tokens. 0 uses default.
+            kv_padding_interval_size: Padding granularity for KV cache in tokens. 0 uses default.
             allow_block_sharing: A flag to allow block sharing if the model has some full attention layers
             use_async: Whether to use async API or not. If None, will be automatically detected.
+            max_cached_graphs: Maximum number of cached CUDA graphs. 0 uses default.
         Returns:
             `ContinuousBatchingManager`: The manager instance to add requests and retrieve results.
         """
@@ -949,10 +954,11 @@ class ContinuousMixin:
             generation_config=gen_config,
             manual_eviction=manual_eviction,
             max_queue_size=max_queue_size,
-            num_q_padding_intervals=num_q_padding_intervals,
-            num_kv_padding_intervals=num_kv_padding_intervals,
+            q_padding_interval_size=q_padding_interval_size,
+            kv_padding_interval_size=kv_padding_interval_size,
             allow_block_sharing=allow_block_sharing,
             use_async=use_async,
+            max_cached_graphs=max_cached_graphs,
         )
 
     # TODO: support streaming
@@ -962,12 +968,13 @@ class ContinuousMixin:
         self,
         inputs: list[list[int]],
         generation_config: GenerationConfig | None = None,
-        num_q_padding_intervals: int = 0,
-        num_kv_padding_intervals: int = 0,
+        q_padding_interval_size: int = 0,
+        kv_padding_interval_size: int = 0,
         allow_block_sharing: bool = True,
         record_timestamps: bool = False,
         progress_bar: bool = True,
         use_async: bool | None = None,
+        max_cached_graphs: int = 0,
         **kwargs,
     ) -> dict[str, GenerationOutput]:
         """Generate sequences for a batch of prompts using continuous batching.
@@ -975,11 +982,12 @@ class ContinuousMixin:
         Args:
             inputs: List of input token sequences (prompts)
             generation_config: Optional generation configuration
-            num_q_padding_intervals: Number of intervals used to pad the query dimension
-            num_kv_padding_intervals: Number of intervals used to pad the keys/values dimension
+            q_padding_interval_size: Padding granularity for queries in tokens. 0 uses default.
+            kv_padding_interval_size: Padding granularity for KV cache in tokens. 0 uses default.
             allow_block_sharing: A flag to allow block sharing if the model has some full attention layers
             record_timestamps: If set to true, the requests will have a timestamp for each token generated
             progress_bar: If set to true, a progress bar will be displayed
+            max_cached_graphs: Maximum number of cached CUDA graphs. 0 uses default.
             **kwargs: Additional generation parameters
 
         Returns:
@@ -998,8 +1006,9 @@ class ContinuousMixin:
         # Prepare context managers for the main loop
         manager_cm = self.continuous_batching_context_manager(
             generation_config=generation_config,
-            num_q_cuda_graphs=num_q_padding_intervals,
-            num_kv_cuda_graphs=num_kv_padding_intervals,
+            q_padding_interval_size=q_padding_interval_size,
+            kv_padding_interval_size=kv_padding_interval_size,
+            max_cached_graphs=max_cached_graphs,
             allow_block_sharing=allow_block_sharing,
             block=True,
             timeout=5,
