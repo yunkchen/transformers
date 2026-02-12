@@ -4026,8 +4026,12 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         config.name_or_path = pretrained_model_name_or_path
         model_init_context = cls.get_init_context(dtype, is_quantized, _is_ds_init_called)
+
+        if patch_config is not None:
+            model_init_context.append(patching_context(cls, patch_config))
+
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
-        with ContextManagers(model_init_context), patching_context(cls, patch_config):
+        with ContextManagers(model_init_context):
             model = cls(config, *model_args, **model_kwargs)
 
             if hf_quantizer is not None:  # replace module with quantized modules (does not touch weights)
@@ -4046,8 +4050,9 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         # Obtain the weight conversion mapping for this model if any are registered
         weight_conversions = get_model_conversion_mapping(model, key_mapping, hf_quantizer)
 
-        # Filter out weight conversions according to the patch config
-        weight_conversions = filter_weight_conversions(weight_conversions, patch_config)
+        if patch_config is not None:
+            # Filter out weight conversions according to the patch config
+            weight_conversions = filter_weight_conversions(weight_conversions, patch_config)
 
         if _torch_distributed_available and device_mesh is not None:  # add hooks to nn.Modules: no weights
             model = distribute_model(model, tp_plan, distributed_config, device_mesh, tp_size)

@@ -30,39 +30,30 @@ class PatchConfig:
     Args:
         mapping (`Dict[str, type[nn.Module]]`):
             A mapping from the name of the class to be patched (e.g. "Qwen2MoeExperts") to the new class that will replace it (e.g. `ModuleListExperts`).
-        filtered_source_patterns (`List[str]`, *optional*):
-            A list of string patterns. Any weight conversion whose source patterns match any of these patterns will be filtered out and not applied during model loading.
-        filtered_target_patterns (`List[str]`, *optional*):
-            A list of string patterns. Any weight conversion whose target patterns match any of these patterns will be filtered out and not applied during model loading.
+        filtered_weight_conversion_patterns (`str` or `List[str]`, *optional*):
+            A regex pattern or a list of regex patterns to filter out weight conversions.
+            Any weight conversion with source or target patterns matching any of the specified patterns will be excluded from being applied during model loading.
+            This can be used to prevent certain weights from being converted when the structure of the model is changed significantly due to the patching,
+            and the converted weights would not be compatible with the new structure.
     """
 
     # Should we make the mapping from absolute module path instead of just class name to avoid potential conflicts?
     # e.g. {"transformers.models.qwen2_moe.modeling_qwen2_moe.Qwen2MoeExperts": ModuleListExperts}
     mapping: dict[str, type[nn.Module]]
-    filtered_source_patterns: str | list[str] | None = None
-    filtered_target_patterns: str | list[str] | None = None
+    filtered_weight_conversion_patterns: str | list[str] | None = None
 
     def __post_init__(self):
-        if isinstance(self.filtered_source_patterns, str):
-            self.filtered_source_patterns = [self.filtered_source_patterns]
-        if isinstance(self.filtered_target_patterns, str):
-            self.filtered_target_patterns = [self.filtered_target_patterns]
+        if isinstance(self.filtered_weight_conversion_patterns, str):
+            self.filtered_weight_conversion_patterns = [self.filtered_weight_conversion_patterns]
 
 
 @contextmanager
-def patching_context(
-    model_class: type[nn.Module],
-    patch_config: PatchConfig | None = None,
-):
+def patching_context(model_class: type[nn.Module], patch_config: PatchConfig):
     """
     Context manager for applying temporary patches to modeling classes during model loading.
     The specified classes in patch_config.mapping will be replaced with the new classes for
     the duration of the context, and then restored to their original state afterwards.
     """
-
-    if patch_config is None:
-        yield
-        return
 
     original_classes = {}
     modeling_module = importlib.import_module(model_class.__module__)
@@ -85,8 +76,7 @@ def patching_context(
 
 
 def filter_weight_conversions(
-    weight_conversions: list[WeightConverter],
-    patch_config: PatchConfig | None = None,
+    weight_conversions: list[WeightConverter], patch_config: PatchConfig
 ) -> list[WeightConverter]:
     """
     Filter out weight conversions that match any of the specified source or target patterns.
@@ -100,21 +90,15 @@ def filter_weight_conversions(
         `List[WeightConverter]`: The filtered list of weight conversions.
     """
 
-    if patch_config is None or (
-        patch_config.filtered_source_patterns is None and patch_config.filtered_target_patterns is None
-    ):
+    if patch_config.filtered_weight_conversion_patterns is None:
         return weight_conversions
 
     filtered_conversions = []
     for conversion in weight_conversions:
-        if patch_config.filtered_source_patterns is not None and any(
-            any(re.search(pattern, source_pattern) for pattern in patch_config.filtered_source_patterns)
-            for source_pattern in conversion.source_patterns
-        ):
-            continue
-        if patch_config.filtered_target_patterns is not None and any(
-            any(re.search(pattern, target_pattern) for pattern in patch_config.filtered_target_patterns)
-            for target_pattern in conversion.target_patterns
+        conversion_patterns = conversion.source_patterns + conversion.target_patterns
+        if any(
+            any(re.search(pattern, conv_pattern) for conv_pattern in conversion_patterns)
+            for pattern in patch_config.filtered_weight_conversion_patterns
         ):
             continue
 
