@@ -234,7 +234,7 @@ class BioGptModel(BioGptPreTrainedModel):
 
         causal_mask = create_causal_mask(
             config=self.config,
-            inputs_embeds=inputs_embeds,
+            input_embeds=inputs_embeds,
             attention_mask=attention_mask,
             cache_position=cache_position,
             past_key_values=self_attn_cache,
