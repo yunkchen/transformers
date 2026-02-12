@@ -142,7 +142,9 @@ class RequestState:
     num_children: int = 0  # Number of children requests
     # Internal fields
     tokens_to_process: list[int] = field(default_factory=list)  # Tokens IDs currently being processed
-    remaining_prefill_tokens: list[int] = field(default_factory=list)  # Initial tokens left to process (initialized in __post_init__)
+    remaining_prefill_tokens: list[int] = field(
+        default_factory=list
+    )  # Initial tokens left to process (initialized in __post_init__)
     generated_tokens: list[int] = field(default_factory=list)  # Generated tokens
     allocated_blocks: int = 0  # Number of blocks allocated to the request
     position_offset: int = 0  # Current position in the sequence for position_ids

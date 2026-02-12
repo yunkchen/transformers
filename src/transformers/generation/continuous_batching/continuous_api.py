@@ -79,7 +79,6 @@ class ProtoPretrainedModel(nn.Module):
 # Continuous Batch Processor (Internal Logic)
 @attach_tracer()
 class ContinuousBatchProcessor:
-
     inputs_and_outputs: ContinuousBatchingIOs | ContinuousBatchingAsyncIOs
 
     def __init__(
@@ -152,9 +151,13 @@ class ContinuousBatchProcessor:
         if self.use_async:
             # Since in async there are 2 IO pairs, there are also 2 graph buffers: we divide the max_cached_graphs by 2
             max_cached_graphs = ceil(max_cached_graphs / 2)
-            self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype, max_cached_graphs)
+            self.inputs_and_outputs = ContinuousBatchingAsyncIOs(
+                cache, config, model_device, model_dtype, max_cached_graphs
+            )
         else:
-            self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype, max_cached_graphs)
+            self.inputs_and_outputs = ContinuousBatchingIOs(
+                cache, config, model_device, model_dtype, max_cached_graphs
+            )
 
     def __repr__(self) -> str:
         return (
@@ -385,7 +388,9 @@ class ContinuousBatchProcessor:
             actual_query_length, _, _, actual_read_sizes, _ = self.inputs_and_outputs.get_actual_lengths()
             padded_q = pad_to_interval(actual_query_length, self.q_padding_interval_size, self.max_batch_tokens)
             max_read_index_size = max(actual_read_sizes)
-            padded_read_index_size = pad_to_interval(max_read_index_size, self.kv_padding_interval_size, self.cache.num_pages)
+            padded_read_index_size = pad_to_interval(
+                max_read_index_size, self.kv_padding_interval_size, self.cache.num_pages
+            )
         else:
             padded_q, padded_read_index_size = 0, 0
         # Retrieve the model kwargs with or without padding
@@ -552,8 +557,12 @@ class ContinuousBatchingManager:
             self.use_async = self.use_cuda_graph and not attn_mask_is_needed(self.model.config)
 
         # Padding interval sizes for Q and KV (0 means use defaults)
-        self.q_padding_interval_size = q_padding_interval_size if q_padding_interval_size > 0 else Q_PADDING_INTERVAL_SIZE
-        self.kv_padding_interval_size = kv_padding_interval_size if kv_padding_interval_size > 0 else KV_PADDING_INTERVAL_SIZE
+        self.q_padding_interval_size = (
+            q_padding_interval_size if q_padding_interval_size > 0 else Q_PADDING_INTERVAL_SIZE
+        )
+        self.kv_padding_interval_size = (
+            kv_padding_interval_size if kv_padding_interval_size > 0 else KV_PADDING_INTERVAL_SIZE
+        )
         self.max_cached_graphs = max_cached_graphs if max_cached_graphs > 0 else MAX_CACHED_GRAPHS
 
         # Log probability generation is not supported yet (TODO)

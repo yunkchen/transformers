@@ -405,7 +405,10 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
 
         # Generation with continuous batching
         continuous_batching_outputs = model.generate_batch(
-            inputs=input_ids, generation_config=model.generation_config, allow_block_sharing=allow_block_sharing, use_async=use_async
+            inputs=input_ids,
+            generation_config=model.generation_config,
+            allow_block_sharing=allow_block_sharing,
+            use_async=use_async,
         )
 
         # Prepare non-continuous batching inputs
@@ -496,17 +499,34 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
     @slow
     def test_continuous_batching_diverse_models(self, model_id: str, use_cuda_graph: bool, use_compile: bool) -> None:
         try:
-            self._test_continuous_batching_parity(model_id, True, "flash_attention_2", use_cuda_graph, use_compile, use_async=False)
+            self._test_continuous_batching_parity(
+                model_id, True, "flash_attention_2", use_cuda_graph, use_compile, use_async=False
+            )
         finally:
             flush_memory(flush_compile=use_compile)
 
     def test_continuous_batching_fast(self) -> None:
         model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        self._test_continuous_batching_parity(model_id, allow_block_sharing=False, attn_implementation="sdpa", use_cuda_graph=False, use_compile=False, use_async=False)
+        self._test_continuous_batching_parity(
+            model_id,
+            allow_block_sharing=False,
+            attn_implementation="sdpa",
+            use_cuda_graph=False,
+            use_compile=False,
+            use_async=False,
+        )
 
     def test_continuous_batching_long_generate(self) -> None:
         model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        self._test_continuous_batching_parity(model_id, allow_block_sharing=True, attn_implementation="flash_attention_2", use_cuda_graph=True, use_compile=True, use_async=False, max_new_tokens=80)
+        self._test_continuous_batching_parity(
+            model_id,
+            allow_block_sharing=True,
+            attn_implementation="flash_attention_2",
+            use_cuda_graph=True,
+            use_compile=True,
+            use_async=False,
+            max_new_tokens=80,
+        )
 
     def test_continuous_batching_few_blocks(self) -> None:
         """This test verifies that generation works with a very small number of blocks, ie. small enough that we need to
@@ -520,7 +540,14 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
             ContinuousBatchProcessor, "soft_reset_one_request", autospec=True, side_effect=original_soft_reset
         ) as mock_soft_reset:
             self._test_continuous_batching_parity(
-                model_id=model_id, allow_block_sharing=True, attn_implementation="sdpa", use_cuda_graph=True, use_compile=False, use_async=False, num_blocks=4, num_repeat_prompts=4,
+                model_id=model_id,
+                allow_block_sharing=True,
+                attn_implementation="sdpa",
+                use_cuda_graph=True,
+                use_compile=False,
+                use_async=False,
+                num_blocks=4,
+                num_repeat_prompts=4,
             )
             self.assertTrue(mock_soft_reset.called, "Soft reset method was not called.")
 
@@ -534,9 +561,18 @@ class ContinuousBatchingGenerationTest(unittest.TestCase):
         )
     )
     @slow
-    def test_continuous_batching_async(self, attn_implementation: str, use_cuda_graph: bool, use_compile: bool) -> None:
+    def test_continuous_batching_async(
+        self, attn_implementation: str, use_cuda_graph: bool, use_compile: bool
+    ) -> None:
         model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        self._test_continuous_batching_parity(model_id, allow_block_sharing=True, attn_implementation=attn_implementation, use_cuda_graph=use_cuda_graph, use_compile=use_compile, use_async=True)
+        self._test_continuous_batching_parity(
+            model_id,
+            allow_block_sharing=True,
+            attn_implementation=attn_implementation,
+            use_cuda_graph=use_cuda_graph,
+            use_compile=use_compile,
+            use_async=True,
+        )
 
     # ---------------------------------------Streaming tests--------------------------------------- #
     #           Ensures the requests have the right behavior with and without streaming             #

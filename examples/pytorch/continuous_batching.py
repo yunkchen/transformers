@@ -324,9 +324,7 @@ if __name__ == "__main__":
     if args.output_file is None:
         os.makedirs("runs/cb", exist_ok=True)
         attn = args.attn.replace("|", "_").replace("/", "_")
-        args.output_file = (
-            f"runs/cb/{attn}_{args.samples}_{args.cuda_graph}.json"
-        )
+        args.output_file = f"runs/cb/{attn}_{args.samples}_{args.cuda_graph}.json"
 
     # Run warmup batch generation if log level is above DEBUG # TODO: understand why warmup incurs a large overhead during cache creation
     if logger.level > logging.DEBUG:

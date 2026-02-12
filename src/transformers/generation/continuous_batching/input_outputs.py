@@ -93,11 +93,11 @@ class ContinuousBatchingIOs:
         max_graphs: int = 32,
     ) -> None:
         """Initialize the continuous batching I/O manager. Args:
-         - cache: The [`PagedAttentionCache`] instance managing the KV cache. Meant to be unique.
-         - config: The model's pretrained configuration.
-         - device: The device to allocate tensors on. If the device is CPU, then the memory is pinned.
-         - model_dtype: The data type for model computations.
-         - max_graphs: Maximum number of CUDA graphs to cache. Uses LRU eviction when full.
+        - cache: The [`PagedAttentionCache`] instance managing the KV cache. Meant to be unique.
+        - config: The model's pretrained configuration.
+        - device: The device to allocate tensors on. If the device is CPU, then the memory is pinned.
+        - model_dtype: The data type for model computations.
+        - max_graphs: Maximum number of CUDA graphs to cache. Uses LRU eviction when full.
         """
         # Memoize attributes
         self.cache = cache
@@ -145,10 +145,10 @@ class ContinuousBatchingIOs:
 
         self.input_ids = self._bulk_input_tensor[0, :max_batch_tokens]
         self.position_ids = self._bulk_input_tensor[1, :max_batch_tokens]
-        self.cumulative_seqlens_q = self._bulk_input_tensor[2, :max_batch_tokens + 1]
+        self.cumulative_seqlens_q = self._bulk_input_tensor[2, : max_batch_tokens + 1]
         self.logits_indices = self._bulk_input_tensor[3, :max_batch_tokens]
-        full_attention_cumulative_seqlens_k = self._bulk_input_tensor[4, :max_batch_tokens + 1]
-        sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, :max_batch_tokens + 1]
+        full_attention_cumulative_seqlens_k = self._bulk_input_tensor[4, : max_batch_tokens + 1]
+        sliding_attention_cumulative_seqlens_k = self._bulk_input_tensor[5, : max_batch_tokens + 1]
         self.carry_over_ids = self._bulk_input_tensor[6, :max_batch_tokens]  # only used for async API
 
         # For sequence length of KV, the entries in the dict depend on the model
@@ -159,7 +159,9 @@ class ContinuousBatchingIOs:
             self.cumulative_seqlens_k["sliding_attention"] = sliding_attention_cumulative_seqlens_k
 
         # Output tensor and scalars
-        self.output_ids = torch.empty((max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory)
+        self.output_ids = torch.empty(
+            (max_batch_tokens + 1,), dtype=torch.int32, device=self.device, pin_memory=pin_memory
+        )
         # Last output token is never changed and set to 0 for async carry on purpose
         self.output_ids.zero_()
         self.total_seqlen_q = 0
@@ -189,10 +191,7 @@ class ContinuousBatchingIOs:
         # For read index, the +T is because there are -1 for seqlen_q when model uses a sliding window
 
     def _transfer_inputs(
-        self,
-        other: "ContinuousBatchingIOs",
-        stream: torch.cuda.Stream | None = None,
-        non_blocking: bool = False
+        self, other: "ContinuousBatchingIOs", stream: torch.cuda.Stream | None = None, non_blocking: bool = False
     ) -> None:
         # Transfer accumulators
         other.actual_query_length = self.actual_query_length
@@ -214,7 +213,6 @@ class ContinuousBatchingIOs:
                 for layer_type in self.attention_mask.keys():
                     other.attention_mask[layer_type].copy_(self.attention_mask[layer_type], non_blocking=non_blocking)
 
-
     @traced
     @torch.no_grad()
     def _reset_static_tensors(self, full_reset: bool = False) -> None:
@@ -227,7 +225,7 @@ class ContinuousBatchingIOs:
         k_len = self.read_index_storage.size(-1) if full_reset else self.actual_key_length
 
         # Reset the attributes part of the bulk input tensor in one kernel
-        self._bulk_input_tensor[:, :q_len+1].zero_()
+        self._bulk_input_tensor[:, : q_len + 1].zero_()
         self.max_seqlen_q = 0
 
         # Reset the logits indices and output ids
@@ -250,7 +248,13 @@ class ContinuousBatchingIOs:
         return self.cumulative_seqlens_q, self.cumulative_seqlens_k
 
     def get_actual_lengths(self) -> tuple[int, int, int, list[int], list[int]]:
-        return self.actual_query_length, self.actual_key_length, self.actual_batch_size, self.actual_read_sizes, self.actual_write_sizes
+        return (
+            self.actual_query_length,
+            self.actual_key_length,
+            self.actual_batch_size,
+            self.actual_read_sizes,
+            self.actual_write_sizes,
+        )
 
     def carry_over_tokens(self, input_ids: torch.Tensor) -> None:
         pass
@@ -368,7 +372,7 @@ class ContinuousBatchingIOs:
         self.write_index = []
         for i, group_read_indices, group_write_indices in zip(count(), read_index, write_index):
             self.read_index_storage[i, : len(group_read_indices)] = to_tensor(group_read_indices)
-            self.write_index_storage[i,: len(group_write_indices)] = to_tensor(group_write_indices)
+            self.write_index_storage[i, : len(group_write_indices)] = to_tensor(group_write_indices)
             self.actual_read_sizes[i] = len(group_read_indices)
             self.actual_write_sizes[i] = len(group_write_indices)
 
@@ -441,7 +445,6 @@ class ContinuousBatchingIOs:
 
 
 class HostDeviceIOPair:
-
     def __init__(
         self,
         cache: PagedAttentionCache,
@@ -462,6 +465,7 @@ class HostDeviceIOPair:
     def transfer_outputs_d2h(self, stream: torch.cuda.Stream) -> None:
         with torch.cuda.stream(stream):
             self.host_io.output_ids.copy_(self.device_io.output_ids, non_blocking=True)
+
 
 class ContinuousBatchingAsyncIOs:
     """A class to handle the inputs and outputs for the asynchronous API. It uses two IO pairs to avoid race conditions
@@ -574,8 +578,8 @@ class ContinuousBatchingAsyncIOs:
         carried_over_ids = prev_output_ids[carry_over_ids]
         carried_over_mask = (carry_over_ids != -1).int()
         # Truncate everything to the right size
-        carried_over_ids = carried_over_ids[:input_ids.size(1)]
-        carried_over_mask = carried_over_mask[:input_ids.size(1)]
+        carried_over_ids = carried_over_ids[: input_ids.size(1)]
+        carried_over_mask = carried_over_mask[: input_ids.size(1)]
         # Perform the carry over
         input_ids[0] = carried_over_ids * carried_over_mask + input_ids[0] * (1 - carried_over_mask)
 
