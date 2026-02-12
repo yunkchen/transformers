@@ -28,7 +28,7 @@ from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...time_series_utils import NegativeBinomialOutput, NormalOutput, StudentTOutput
 from ...utils import TransformersKwargs, auto_docstring
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
 from ...utils.output_capturing import OutputRecorder
 from ..bart.modeling_bart import BartAttention
 from ..time_series_transformer.modeling_time_series_transformer import (
@@ -414,7 +414,7 @@ class InformerEncoder(TimeSeriesTransformerEncoder):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @capture_outputs
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,

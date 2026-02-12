@@ -22,7 +22,8 @@ from ...modeling_outputs import BaseModelOutputWithPooling
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ..auto import CONFIG_MAPPING, AutoConfig
 from ..llava.modeling_llava import (
     LlavaCausalLMOutputWithPast,
@@ -325,7 +326,8 @@ class GotOcr2Model(LlavaModel):
 
         return image_outputs
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

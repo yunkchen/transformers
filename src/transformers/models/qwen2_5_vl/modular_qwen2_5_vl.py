@@ -555,7 +555,8 @@ class Qwen2_5_VLModel(Qwen2VLModel):
 
             return position_ids, mrope_position_deltas
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

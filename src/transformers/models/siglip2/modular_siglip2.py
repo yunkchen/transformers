@@ -290,7 +290,7 @@ class Siglip2VisionTransformer(SiglipVisionTransformer):
         super().__init__(config)
 
     # Update: add `spatial_shapes` and `attention_mask`
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -423,7 +423,7 @@ class Siglip2VisionModel(SiglipVisionModel):
 
 class Siglip2Model(SiglipModel):
     # Update: add `spatial_shapes` and `pixel_attention_mask`
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_image_features(
         self,
@@ -465,7 +465,7 @@ class Siglip2Model(SiglipModel):
         )
 
     # Update: add `spatial_shapes` and `pixel_attention_mask`
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -566,7 +566,7 @@ class Siglip2Model(SiglipModel):
 
 class Siglip2ForImageClassification(SiglipForImageClassification):
     # Update: add `spatial_shapes` and `pixel_attention_mask`
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,

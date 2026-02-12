@@ -33,7 +33,8 @@ from ...modeling_outputs import BaseModelOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from .configuration_timesfm import TimesFmConfig
 
 
@@ -365,7 +366,8 @@ class TimesFmModel(TimesFmPreTrainedModel):
         )
         return outputs, (mu, sigma)
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

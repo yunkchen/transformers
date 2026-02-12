@@ -33,7 +33,8 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging, torch_int
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from .configuration_altclip import AltCLIPConfig, AltCLIPTextConfig, AltCLIPVisionConfig
 
 
@@ -748,7 +749,8 @@ class AltCLIPVisionTransformer(nn.Module):
         self.encoder = AltCLIPEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -796,7 +798,8 @@ class AltCLIPVisionModel(AltCLIPPreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.vision_model.embeddings.patch_embedding
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -873,7 +876,8 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     # Copied from transformers.models.clap.modeling_clap.ClapTextModel.forward
@@ -958,7 +962,8 @@ class AltCLIPTextModel(AltCLIPPreTrainedModel):
     def resize_token_embeddings(self, new_num_tokens: int | None = None) -> nn.Embedding:
         return super().resize_token_embeddings(new_num_tokens)
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -1089,7 +1094,8 @@ class AltCLIPModel(AltCLIPPreTrainedModel):
 
         return text_outputs
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def get_image_features(

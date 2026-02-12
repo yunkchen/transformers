@@ -39,7 +39,8 @@ from ...utils import (
     can_return_tuple,
     logging,
 )
-from ...utils.generic import check_model_inputs, is_flash_attention_requested
+from ...utils.generic import is_flash_attention_requested, merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from .configuration_gpt_bigcode import GPTBigCodeConfig
 
 
@@ -403,7 +404,8 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
     def set_input_embeddings(self, new_embeddings):
         self.wte = new_embeddings
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -568,7 +570,8 @@ class GPTBigCodeForCausalLM(GPTBigCodePreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -662,7 +665,8 @@ class GPTBigCodeForSequenceClassification(GPTBigCodePreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -784,7 +788,8 @@ class GPTBigCodeForTokenClassification(GPTBigCodePreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(

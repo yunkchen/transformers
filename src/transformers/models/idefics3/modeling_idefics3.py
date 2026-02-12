@@ -624,7 +624,8 @@ class Idefics3Model(Idefics3PreTrainedModel):
 
         return image_outputs
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring(
         custom_intro="""
         Inputs fed to the model can have an arbitrary number of images. To account for this, pixel_values fed to
@@ -760,7 +761,8 @@ class Idefics3ForConditionalGeneration(Idefics3PreTrainedModel, GenerationMixin)
             pixel_values=pixel_values, pixel_attention_mask=pixel_attention_mask, **kwargs
         )
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

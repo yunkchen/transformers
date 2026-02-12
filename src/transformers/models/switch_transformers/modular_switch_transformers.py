@@ -38,7 +38,7 @@ from ...utils import (
     is_torchdynamo_compiling,
     logging,
 )
-from ...utils.generic import (
+from ...utils.generic import (, merge_with_config_defaults
     can_return_tuple,
     merge_with_config_defaults,
 )

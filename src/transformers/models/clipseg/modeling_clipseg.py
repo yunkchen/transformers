@@ -30,7 +30,8 @@ from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, logging, torch_int
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from .configuration_clipseg import CLIPSegConfig, CLIPSegTextConfig, CLIPSegVisionConfig
 
 
@@ -611,7 +612,8 @@ class CLIPSegTextModel(CLIPSegPreTrainedModel):
     def set_input_embeddings(self, value):
         self.text_model.embeddings.token_embedding = value
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -710,7 +712,8 @@ class CLIPSegVisionModel(CLIPSegPreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.vision_model.embeddings.patch_embedding
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -793,7 +796,8 @@ class CLIPSegModel(CLIPSegPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def get_text_features(
         self,
@@ -827,7 +831,8 @@ class CLIPSegModel(CLIPSegPreTrainedModel):
 
         return text_outputs
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_image_features(
         self,
@@ -864,7 +869,8 @@ class CLIPSegModel(CLIPSegPreTrainedModel):
 
         return vision_outputs
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

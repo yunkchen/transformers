@@ -47,7 +47,8 @@ from ...utils import (
     logging,
     torch_compilable_check,
 )
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder
 from .configuration_bigbird_pegasus import BigBirdPegasusConfig
 
@@ -1575,7 +1576,8 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.Tensor | None = None,
@@ -1797,7 +1799,8 @@ class BigBirdPegasusDecoder(BigBirdPegasusPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

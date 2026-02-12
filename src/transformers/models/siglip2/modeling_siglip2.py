@@ -514,7 +514,8 @@ class Siglip2VisionTransformer(Siglip2PreTrainedModel):
 
         self.post_init()
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -853,7 +854,8 @@ class Siglip2Model(Siglip2PreTrainedModel):
             **kwargs,
         )
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_image_features(
         self,

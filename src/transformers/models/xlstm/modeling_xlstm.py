@@ -26,7 +26,8 @@ from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, is_xlstm_available
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from .configuration_xlstm import xLSTMConfig
 
 
@@ -1409,7 +1410,8 @@ class xLSTMModel(xLSTMPreTrainedModel):
     def set_input_embeddings(self, new_embedding):
         self.embeddings = new_embedding
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1423,7 +1425,7 @@ class xLSTMModel(xLSTMPreTrainedModel):
         cache_params (`xLSTMCache`, *optional*):
             The xLSTMCache that carries the RNN states.
         """
-        # Resolved here (not just by @check_model_inputs) because the chunked inference path below
+        # Resolved here (not just by @capture_outputs) because the chunked inference path below
         # is incompatible with hidden state collection and we need the value to pick the right branch.
         output_hidden_states = kwargs.get("output_hidden_states")
         if output_hidden_states is None:

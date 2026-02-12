@@ -33,7 +33,8 @@ from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import TransformersKwargs, can_return_tuple, logging
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder
 from .configuration_blip import BlipTextConfig
 
@@ -565,7 +566,8 @@ class BlipTextModel(BlipTextPreTrainedModel):
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
         return extended_attention_mask
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.Tensor | None = None,

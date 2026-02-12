@@ -932,7 +932,8 @@ class DPTForDepthEstimation(DPTPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -1083,7 +1084,8 @@ class DPTForSemanticSegmentation(DPTPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(

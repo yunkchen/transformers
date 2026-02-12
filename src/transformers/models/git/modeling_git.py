@@ -45,6 +45,8 @@ from ...utils import (
     torch_int,
 )
 from ...utils.deprecation import deprecate_kwarg
+from ...utils.generic import merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from .configuration_git import GitConfig, GitVisionConfig
 
 
@@ -841,7 +843,8 @@ class GitVisionModel(GitPreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.vision_model.embeddings.patch_embedding
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,

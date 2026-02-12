@@ -598,7 +598,8 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
         image_batch_size would be 7 when num_images_per_sample=[1, 3, 1, 2] and max_num_images would be 3.
         """
     )
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -750,7 +751,8 @@ class SmolVLMForConditionalGeneration(SmolVLMPreTrainedModel, GenerationMixin):
             pixel_values=pixel_values, pixel_attention_mask=pixel_attention_mask, **kwargs
         )
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

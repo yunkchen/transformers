@@ -28,7 +28,8 @@ from ...utils import (
     logging,
     torch_compilable_check,
 )
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ..auto import AutoModel
 from ..llava.modeling_llava import (
     LlavaCausalLMOutputWithPast,
@@ -212,7 +213,8 @@ class PerceptionLMModel(LlavaModel):
             )
         return special_image_mask, special_video_mask
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

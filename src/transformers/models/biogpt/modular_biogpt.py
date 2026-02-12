@@ -37,7 +37,8 @@ from ...utils import (
     can_return_tuple,
     logger,
 )
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ..bart.modeling_bart import (
     BartAttention,
     BartDecoderLayer,
@@ -176,7 +177,8 @@ class BioGptModel(BioGptPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

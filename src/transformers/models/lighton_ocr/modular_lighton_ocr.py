@@ -31,7 +31,8 @@ from ...processing_utils import (
 )
 from ...tokenization_utils_base import PreTokenizedInput, TextInput
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ..auto import CONFIG_MAPPING, AutoConfig, AutoModel
 from ..mistral3.modeling_mistral3 import (
     Mistral3ForConditionalGeneration,
@@ -324,7 +325,8 @@ class LightOnOcrModel(Mistral3Model):
 
         return image_outputs
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

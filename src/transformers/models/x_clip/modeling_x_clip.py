@@ -35,7 +35,8 @@ from ...utils import (
     logging,
     torch_int,
 )
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder
 from .configuration_x_clip import XCLIPConfig, XCLIPTextConfig, XCLIPVisionConfig
 
@@ -635,7 +636,8 @@ class XCLIPTextModel(XCLIPPreTrainedModel):
     def set_input_embeddings(self, value):
         self.text_model.embeddings.token_embedding = value
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -768,7 +770,8 @@ class XCLIPVisionModel(XCLIPPreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.vision_model.embeddings.patch_embedding
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -1034,7 +1037,8 @@ class XCLIPModel(XCLIPPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_text_features(
         self,
@@ -1068,7 +1072,8 @@ class XCLIPModel(XCLIPPreTrainedModel):
 
         return text_outputs
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def get_video_features(
         self,
@@ -1158,7 +1163,8 @@ class XCLIPModel(XCLIPPreTrainedModel):
 
         return video_outputs
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,

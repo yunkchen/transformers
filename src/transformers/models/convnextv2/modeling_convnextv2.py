@@ -28,7 +28,8 @@ from ...modeling_outputs import (
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging
-from ...utils.generic import can_return_tuple, check_model_inputs
+from ...utils.generic import can_return_tuple
+from ...utils.output_capturing import capture_outputs
 from .configuration_convnextv2 import ConvNextV2Config
 
 
@@ -284,7 +285,7 @@ class ConvNextV2Model(ConvNextV2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -383,7 +384,7 @@ class ConvNextV2Backbone(BackboneMixin, ConvNextV2PreTrainedModel):
         # initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @can_return_tuple
     @auto_docstring
     def forward(

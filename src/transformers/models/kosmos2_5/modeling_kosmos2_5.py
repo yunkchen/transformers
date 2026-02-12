@@ -45,7 +45,8 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from ...utils.generic import check_model_inputs, is_flash_attention_requested
+from ...utils.generic import is_flash_attention_requested, merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from .configuration_kosmos2_5 import (
     Kosmos2_5Config,
     Kosmos2_5TextConfig,
@@ -1090,7 +1091,8 @@ class Kosmos2_5VisionModel(Kosmos2_5PreTrainedModel):
         return self.embeddings.patch_projection
 
     # Similar to transformers.models.pix2struct.modeling_pix2struct.Pix2StructVisionModel.forward without docstring
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     def forward(
         self,
         flattened_patches: torch.Tensor | None = None,
@@ -1134,7 +1136,8 @@ class Kosmos2_5TextModel(Kosmos2_5PreTrainedModel):
     def set_input_embeddings(self, value):
         self.model.embed_tokens = value
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @add_start_docstrings_to_model_forward(KOSMOS2_5_TEXT_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=BaseModelOutputWithPastAndCrossAttentions, config_class=Kosmos2_5TextConfig)
     def forward(

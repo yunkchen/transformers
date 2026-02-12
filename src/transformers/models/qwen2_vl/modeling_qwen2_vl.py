@@ -46,7 +46,7 @@ from ...utils import (
     logging,
     torch_compilable_check,
 )
-from ...utils.generic import (
+from ...utils.generic import (, merge_with_config_defaults
     is_flash_attention_requested,
     maybe_autocast,
     merge_with_config_defaults,
@@ -828,7 +828,8 @@ class Qwen2VLTextModel(Qwen2VLPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1187,7 +1188,8 @@ class Qwen2VLModel(Qwen2VLPreTrainedModel):
             )
         return special_image_mask, special_video_mask
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

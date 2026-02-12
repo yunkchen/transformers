@@ -25,7 +25,8 @@ from ...modeling_outputs import DepthEstimatorOutput
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
-from ...utils.generic import check_model_inputs, torch_int
+from ...utils.generic import torch_int
+from ...utils.output_capturing import capture_outputs
 from .configuration_prompt_depth_anything import PromptDepthAnythingConfig
 
 
@@ -383,7 +384,7 @@ class PromptDepthAnythingForDepthEstimation(PromptDepthAnythingPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(

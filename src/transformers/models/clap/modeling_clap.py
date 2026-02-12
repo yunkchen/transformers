@@ -34,7 +34,7 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import apply_chunking_to_forward
 from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging, torch_int
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
 from .configuration_clap import ClapAudioConfig, ClapConfig, ClapTextConfig
 
 
@@ -1421,7 +1421,7 @@ class ClapTextModel(ClapPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 
-    @check_model_inputs
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1708,7 +1708,7 @@ class ClapTextModelWithProjection(ClapPreTrainedModel):
     def set_input_embeddings(self, value):
         self.text_model.embeddings.word_embeddings = value
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,

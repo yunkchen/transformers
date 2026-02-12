@@ -38,7 +38,7 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...pytorch_utils import compile_compatible_method_lru_cache
 from ...utils import auto_docstring, can_return_tuple, logging
-from ...utils.generic import (
+from ...utils.generic import (, merge_with_config_defaults
     TransformersKwargs,
     is_flash_attention_requested,
     merge_with_config_defaults,

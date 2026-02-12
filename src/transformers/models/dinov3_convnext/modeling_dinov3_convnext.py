@@ -23,7 +23,7 @@ from ...backbone_utils import BackboneMixin
 from ...modeling_outputs import BackboneOutput, BaseModelOutputWithPoolingAndNoAttention
 from ...modeling_utils import PreTrainedModel
 from ...utils import auto_docstring, logging
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
 from .configuration_dinov3_convnext import DINOv3ConvNextConfig
 
 
@@ -210,7 +210,7 @@ class DINOv3ConvNextModel(DINOv3ConvNextPreTrainedModel):
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.post_init()
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> BaseModelOutputWithPoolingAndNoAttention:
         hidden_states = pixel_values
@@ -253,7 +253,7 @@ class DINOv3ConvNextBackbone(BackboneMixin, DINOv3ConvNextPreTrainedModel):
     def get_input_embeddings(self):
         return None
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> BackboneOutput:
         hidden_states = pixel_values

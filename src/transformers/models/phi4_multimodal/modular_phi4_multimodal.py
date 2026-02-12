@@ -35,7 +35,7 @@ from ...modeling_rope_utils import RopeParameters
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import auto_docstring, logging
-from ...utils.generic import (
+from ...utils.generic import (, merge_with_config_defaults
     TransformersKwargs,
     maybe_autocast,
     merge_with_config_defaults,
@@ -1587,7 +1587,8 @@ class Phi4MultimodalForCausalLM(Phi3ForCausalLM):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,

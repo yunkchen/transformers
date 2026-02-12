@@ -18,7 +18,8 @@ from ...modeling_outputs import DepthEstimatorOutput
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
-from ...utils.generic import check_model_inputs, torch_int
+from ...utils.generic import torch_int
+from ...utils.output_capturing import capture_outputs
 from ..depth_anything.configuration_depth_anything import DepthAnythingConfig
 from ..depth_anything.modeling_depth_anything import (
     DepthAnythingDepthEstimationHead,
@@ -227,7 +228,7 @@ class PromptDepthAnythingNeck(DepthAnythingNeck):
     """
 )
 class PromptDepthAnythingForDepthEstimation(DepthAnythingForDepthEstimation):
-    @check_model_inputs
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(

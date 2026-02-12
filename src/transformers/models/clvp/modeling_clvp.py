@@ -43,7 +43,8 @@ from ...utils import (
     can_return_tuple,
     logging,
 )
-from ...utils.generic import check_model_inputs
+from ...utils.output_capturing import capture_outputs
+from ...utils.generic import merge_with_config_defaults
 from .configuration_clvp import (
     ClvpConfig,
     ClvpDecoderConfig,
@@ -853,7 +854,8 @@ class ClvpEncoder(ClvpPreTrainedModel):
     def set_input_embeddings(self, value):
         self.token_embedding = value
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -945,7 +947,8 @@ class ClvpDecoder(ClvpPreTrainedModel):
     def set_input_embeddings(self, new_embeddings):
         self.input_embeds_layer = new_embeddings
 
-    @check_model_inputs
+    @merge_with_config_defaults
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

@@ -25,7 +25,8 @@ from ...modeling_flash_attention_utils import FlashAttentionKwargs
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import ModelOutput, TensorType, TransformersKwargs, auto_docstring, logging
-from ...utils.generic import can_return_tuple, check_model_inputs
+from ...utils.generic import can_return_tuple
+from ...utils.output_capturing import capture_outputs
 from ..auto import CONFIG_MAPPING, AutoConfig
 from ..auto.modeling_auto import AutoModelForKeypointDetection
 from ..clip.modeling_clip import CLIPMLP
@@ -919,7 +920,7 @@ class LightGlueForKeypointMatching(LightGluePreTrainedModel):
             all_attentions,
         )
 
-    @check_model_inputs
+    @capture_outputs
     @can_return_tuple
     @auto_docstring
     def forward(
