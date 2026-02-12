@@ -466,7 +466,45 @@ class HostDeviceIOPair:
 class ContinuousBatchingAsyncIOs:
     """A class to handle the inputs and outputs for the asynchronous API. It uses two IO pairs to avoid race conditions
     between the two batches, which means twice as more VRAM is used for static input tensors and CUDA graph. If your GPU
-    is large enough or you want to generate long sequences, this is a good trade-off to make."""
+    is large enough or you want to generate long sequences, this is a good trade-off to make.
+
+    Asynchronous batching works by creating two pairs of host - device inputs and ouputs:
+
+                                    inputs
+                      ┌──────────┐ ────────► ┌────────────┐
+    IO pair object:   │ Host IOs │           │ Device IOs │       (for a CUDA sytem, Host = CPU and Device = GPU)
+                      └──────────┘ ◄──────── └────────────┘
+                                    outputs
+
+    Each pair is separate from the other. This means that each pairs has its own CUDA graphs set. But the CUDA streams
+    orchestrating the transfer from host to device (H2D) and device to host (D2H) are the same for both pairs. Same for
+    the compute stream.
+    The order of steps in async batching looks like this (for 3 batches of compute):
+
+         │ ┌────┬────┐                  ┌────┬────┐     ┌────┬────┐       ┌────┐          ┌────┐
+    CPU  │ │PR 0│PR 1│                  │UP 0│PR 2│     │UP 1│PR 3│       │UP 2│          │UP 3│
+         │ └────┼───┬┴──┐               └────┴────┼───┐ └────┴────┼───┐   └────┘          └────┘
+    H2D  │      │0->│1->│               ¦         │2->│ ¦         │3->│   ¦               ¦
+         │      └───┼───┴───────────┬─────────────┴─┬─┼───────────┴───┼───────────────┐   ¦
+    GPU  │          │   COMPUTE 0   │   COMPUTE 1   │█│   COMPUTE 2   │   COMPUTE 3   │   ¦
+         │          └───────────────┼───┬───────────┼─┴─┬─────────────┼───┬───────────┼───┤
+    D2H  │                          │0<-│           │1<-│             │2<-│           │3<-│
+         │                          └───┘           └───┘             └───┘           └───┘
+
+    with: - CPU: actions happening on the CPU (host-side)
+          - GPU: actions happening on the GPU (device-side)
+          - H2D: host to device transfer
+          - D2H: device to host transfer
+    and:
+          - PR N: preparation of batch N
+          - ->N: host to device transfer of batch N
+          - COMPUTE N: compute step for batch N
+          - <-N: device to host transfer of batch N
+          - UP N: update of batch N
+
+    You can see that the GPU is almost always busy, execpt where the █ is.
+    Proper ordering of steps is ensured through the use of CUDA events and streams.
+    """
 
     def __init__(
         self,
