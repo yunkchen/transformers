@@ -121,7 +121,7 @@ class RequestState:
         num_children (int): The number of children requests
         full_prompt_ids (list[int] | None): The tokens IDs of the full prompt.
         prompt_ids (list[int] | None): The tokens IDs currently being processed.
-        remaining_prompt_ids (list[int]): The tokens IDs remaining to be processed (for split requests).
+        remaining_prompt_ids (list[int]): The initial tokens IDs remaining to be processed.
         static_outputs (list[int]): The generated tokens.
         allocated_blocks (int): The number of blocks allocated to the request.
         position_offset (int): The current position in the sequence for position_ids.
@@ -142,7 +142,7 @@ class RequestState:
     num_children: int = 0  # Number of children requests
     # Internal fields
     tokens_to_process: list[int] = field(default_factory=list)  # Tokens IDs currently being processed
-    remaining_prefill_tokens: list[int] = field(default_factory=list)  # For split requests, prefill left to process
+    remaining_prefill_tokens: list[int] = field(default_factory=list)  # Initial tokens left to process (initialized in __post_init__)
     generated_tokens: list[int] = field(default_factory=list)  # Generated tokens
     allocated_blocks: int = 0  # Number of blocks allocated to the request
     position_offset: int = 0  # Current position in the sequence for position_ids
@@ -311,6 +311,9 @@ class RequestState:
 
 class FutureRequestState:
     """Tracks the current state of a request and the relevant information to update it."""
+
+    # This makes instantiating this class faster
+    __slots__ = ("state", "has_new_token", "complete_blocks")
 
     def __init__(self, state: RequestState, has_new_token: bool, complete_blocks: int) -> None:
         self.state = state

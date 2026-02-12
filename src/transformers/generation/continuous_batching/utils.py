@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections import OrderedDict
 from math import ceil
 
 import torch
@@ -18,18 +19,26 @@ import torch
 from transformers.configuration_utils import PretrainedConfig
 
 
-class CudaGraphBuffer(dict):
+class CudaGraphBuffer:
     """A fixed-size dict for CUDA graphs with LRU eviction when full."""
 
     def __init__(self, max_size: int) -> None:
-        super().__init__()
+        if max_size <= 0:
+            raise ValueError(f"max_size must be positive, but got {max_size}")
         self.max_size = max_size
+        self._storage: OrderedDict[tuple[int, int], torch.cuda.CUDAGraph] = OrderedDict()
 
-    def __setitem__(self, key, value) -> None:
-        if key not in self and len(self) >= self.max_size:
-            oldest_key = next(iter(self))
-            self.pop(oldest_key).reset()  # free GPU memory immediately
-        super().__setitem__(key, value)
+    def get_graph(self, q_len: int, kv_len: int) -> torch.cuda.CUDAGraph | None:
+        graph = self._storage.get((q_len, kv_len))
+        if graph is not None:
+            self._storage.move_to_end((q_len, kv_len))
+        return graph
+
+    def set_graph(self, q_len: int, kv_len: int, graph: torch.cuda.CUDAGraph) -> None:
+        if len(self._storage) >= self.max_size:
+            _, graph = self._storage.popitem(last=False)
+            graph.reset()
+        self._storage[(q_len, kv_len)] = graph
 
 
 def attn_mask_is_needed(config: PretrainedConfig) -> bool:

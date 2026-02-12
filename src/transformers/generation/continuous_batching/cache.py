@@ -410,6 +410,8 @@ class PagedAttentionCache:
         in the forward pass. A complete block is a block where the KV cache has been fully computed: if the block has
         enough space to hold the cache for N tokens, the block is marked as complete when the cache data is present for
         the N tokens. If block sharing is off, this is a no-op."""
+        # The status can be FINISHED in async mode, because batch N+1 offloaded the request before batch N was over. So
+        # we need to check for this case to avoid looking in the block table for blocks that no longer exist.
         if num_complete_blocks == 0 or state.status == RequestStatus.FINISHED:
             return None
         for cm in self.group_cache_managers:

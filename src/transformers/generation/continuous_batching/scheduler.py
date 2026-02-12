@@ -176,6 +176,8 @@ class Scheduler(ABC):
             if state.status <= RequestStatus.PREFILLING:
                 state.tokens_to_process = state.remaining_prefill_tokens
                 state.remaining_prefill_tokens = []
+                # Although prefill will only be done after the batch being scheduled now, we set the status to DECODING
+                # to stay coherent when using asynchronous batching
                 state.status = RequestStatus.DECODING
 
         # Otherwise: we need to split the request

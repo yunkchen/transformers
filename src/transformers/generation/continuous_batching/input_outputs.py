@@ -166,7 +166,7 @@ class ContinuousBatchingIOs:
         self.max_seqlen_q = 0
         self.max_seqlen_k = dict.fromkeys(self.cumulative_seqlens_k.keys(), 0)
 
-        # If the attention mask is needed, it is allocated sepaarately
+        # If the attention mask is needed, it is allocated separately
         if attn_mask_is_needed(self.config):
             self.attention_mask = {}
             for layer_type in self.cumulative_seqlens_k.keys():
@@ -464,22 +464,9 @@ class HostDeviceIOPair:
             self.host_io.output_ids.copy_(self.device_io.output_ids, non_blocking=True)
 
 class ContinuousBatchingAsyncIOs:
-    """To be compatible with the synchronous API, this class implements the following:
-
-    GETTERS:
-        - get_cumulative_seqlens
-        - get_actual_lengths
-
-    METHODS:
-        - prepare_batch_tensors
-        - get_model_kwargs
-        - retrieve_device_outputs
-        - prepare_batch_update
-
-    PROPERTIES:
-        - output_ids
-        - graphs
-    """
+    """A class to handle the inputs and outputs for the asynchronous API. It uses two IO pairs to avoid race conditions
+    between the two batches, which means twice as more VRAM is used for static input tensors and CUDA graph. If your GPU
+    is large enough or you want to generate long sequences, this is a good trade-off to make."""
 
     def __init__(
         self,
@@ -496,11 +483,11 @@ class ContinuousBatchingAsyncIOs:
         self.h2d_stream = torch.cuda.Stream(device=device)
         self.d2h_stream = torch.cuda.Stream(device=device)
         self.compute_stream = torch.cuda.Stream(device=device)
-        # Set all compute streams to the same stream to avoid useless streams
-        self.io_pairs[0].host_io.compute_stream = self.compute_stream
-        self.io_pairs[0].device_io.compute_stream = self.compute_stream
-        self.io_pairs[1].host_io.compute_stream = self.compute_stream
-        self.io_pairs[1].device_io.compute_stream = self.compute_stream
+        # Set all unused compute streams to None
+        self.io_pairs[0].host_io.compute_stream = None
+        self.io_pairs[0].device_io.compute_stream = None
+        self.io_pairs[1].host_io.compute_stream = None
+        self.io_pairs[1].device_io.compute_stream = None
         # Used in carry over ids computation
         self.max_batch_tokens = cache.max_batch_tokens
 
@@ -575,7 +562,6 @@ class ContinuousBatchingAsyncIOs:
         self.d2h_stream.record_event(io_pair.d2h_over)
         # Switch IO pair
         self.current_pair = 1 - self.current_pair
-        # No super() call, this would synchornize the compute stream
 
     # This method is called after the switch and not during the first batch
     def prepare_batch_update(self) -> tuple[list[FutureRequestState], list[int]]:

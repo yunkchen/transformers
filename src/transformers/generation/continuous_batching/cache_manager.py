@@ -17,8 +17,6 @@ from collections.abc import Iterator
 from math import ceil
 from typing import TypeVar
 
-import torch
-
 from .requests import logger
 
 
@@ -413,7 +411,7 @@ class FullAttentionCacheAllocator(CacheAllocator):
         start_block = past_length // self.block_size
         start_offset = past_length % self.block_size
         end_pos = past_length + query_length
-        end_block = (end_pos - 1) // self.block_size
+        end_block = (end_pos - 1) // self.block_size  # -1 because if end_pos == block_size, we still end on block 0
         # Compute the physical indices
         physical_indices = []
         for b in range(start_block, end_block + 1):

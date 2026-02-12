@@ -17,6 +17,7 @@ import threading
 from abc import abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
+from math import ceil
 from time import perf_counter
 
 import torch
@@ -78,6 +79,9 @@ class ProtoPretrainedModel(nn.Module):
 # Continuous Batch Processor (Internal Logic)
 @attach_tracer()
 class ContinuousBatchProcessor:
+
+    inputs_and_outputs: ContinuousBatchingIOs | ContinuousBatchingAsyncIOs
+
     def __init__(
         self,
         cache: PagedAttentionCache,
@@ -146,6 +150,8 @@ class ContinuousBatchProcessor:
         # Setup inputs and outputs
         self.use_async = use_async
         if self.use_async:
+            # Since in async there are 2 IO pairs, there are also 2 graph buffers: we divide the max_cached_graphs by 2
+            max_cached_graphs = ceil(max_cached_graphs / 2)
             self.inputs_and_outputs = ContinuousBatchingAsyncIOs(cache, config, model_device, model_dtype, max_cached_graphs)
         else:
             self.inputs_and_outputs = ContinuousBatchingIOs(cache, config, model_device, model_dtype, max_cached_graphs)
@@ -210,8 +216,9 @@ class ContinuousBatchProcessor:
         )
         # Create a copy of the offloaded request keeping the generated tokens as addition to the initial prompt
         new_state = state.create_equivalent_initial_request()
+        # In async mode, this ensures the request is not updated in the other batch without triggering logging
+        state._status = RequestStatus.FINISHED
         # Actual offloading of the request
-        state._status = RequestStatus.FINISHED  # in async mode, it ensure the request is not updated in the other batch
         self.scheduler.finish_request(request_id, evict_from_cache=True)
         self.scheduler.add_waiting_request(new_state)
         # This flag blocks any new requests from being scheduled until one request is finished. This ensures that we
@@ -392,7 +399,7 @@ class ContinuousBatchProcessor:
 
         # Otherwise, we use create or replay the graph
         else:
-            graph = self.inputs_and_outputs.graphs.get((padded_q, padded_read_index_size))
+            graph = self.inputs_and_outputs.graphs.get_graph(padded_q, padded_read_index_size)
             # Case: the graph already exists, so we replay it
             if graph is not None:
                 with torch.cuda.stream(compute_stream):
@@ -411,7 +418,7 @@ class ContinuousBatchProcessor:
                 with torch.cuda.graph(graph, stream=compute_stream):
                     self._forward_process_and_sample(model, batch_data, logit_processor, do_sample)
                 # Store
-                self.inputs_and_outputs.graphs[(padded_q, padded_read_index_size)] = graph
+                self.inputs_and_outputs.graphs.set_graph(padded_q, padded_read_index_size, graph)
 
         # In any case, we transfer the outputs to the host
         self.inputs_and_outputs.retrieve_device_outputs()
