@@ -86,6 +86,7 @@ from .integrations.tensor_parallel import (
 from .loss.loss_utils import LOSS_MAPPING
 from .modeling_flash_attention_utils import lazy_import_flash_attention, lazy_import_paged_flash_attention
 from .modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from .monkey_patch import apply_monkey_patches
 from .pytorch_utils import id_tensor_storage
 from .quantizers import HfQuantizer
 from .quantizers.auto import get_hf_quantizer
@@ -1457,7 +1458,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         if "experts_implementation" in kwargs:
             config._experts_implementation = kwargs.pop("experts_implementation")
 
-        init_contexts = []
+        init_contexts = [apply_monkey_patches(cls)]
         if dtype is not None:
             init_contexts.append(local_torch_dtype(dtype, cls.__name__))
 
@@ -3551,7 +3552,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
     @classmethod
     def get_init_context(cls, dtype: torch.dtype, is_quantized: bool, _is_ds_init_called: bool):
         # Need to instantiate with correct dtype
-        init_contexts = [local_torch_dtype(dtype, cls.__name__), init.no_tie_weights()]
+        init_contexts = [local_torch_dtype(dtype, cls.__name__), init.no_tie_weights(), apply_monkey_patches(cls)]
         if is_deepspeed_zero3_enabled():
             import deepspeed
 
@@ -3878,7 +3879,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         use_kernels = kwargs.pop("use_kernels", False)
         kernel_config = kwargs.pop("kernel_config", None)
         key_mapping = kwargs.pop("key_mapping", None)
-        patcher = kwargs.pop("patcher", None)
 
         if distributed_config is not None and tp_plan is None:
             tp_plan = "auto"
@@ -4026,9 +4026,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         config.name_or_path = pretrained_model_name_or_path
         model_init_context = cls.get_init_context(dtype, is_quantized, _is_ds_init_called)
 
-        if patcher is not None:
-            model_init_context.append(patcher.get_patching_context(cls))
-
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
         with ContextManagers(model_init_context):
             model = cls(config, *model_args, **model_kwargs)
@@ -4048,9 +4045,6 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
 
         # Obtain the weight conversion mapping for this model if any are registered
         weight_conversions = get_model_conversion_mapping(model, key_mapping, hf_quantizer)
-
-        if patcher is not None:
-            weight_conversions = patcher.update_weight_conversions(weight_conversions)
 
         if _torch_distributed_available and device_mesh is not None:  # add hooks to nn.Modules: no weights
             model = distribute_model(model, tp_plan, distributed_config, device_mesh, tp_size)

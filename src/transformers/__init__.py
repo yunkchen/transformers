@@ -443,7 +443,6 @@ else:
     _import_structure["modeling_rope_utils"] = ["ROPE_INIT_FUNCTIONS", "dynamic_rope_update", "RopeParameters"]
     _import_structure["modeling_utils"] = ["PreTrainedModel", "AttentionInterface"]
     _import_structure["masking_utils"] = ["AttentionMaskInterface"]
-    _import_structure["patching_utils"] = ["Patcher"]
     _import_structure["optimization"] = [
         "Adafactor",
         "get_constant_schedule",
@@ -642,9 +641,6 @@ if TYPE_CHECKING:
     from .optimization import get_polynomial_decay_schedule_with_warmup as get_polynomial_decay_schedule_with_warmup
     from .optimization import get_scheduler as get_scheduler
     from .optimization import get_wsd_schedule as get_wsd_schedule
-
-    # Pathching
-    from .patching_utils import Patcher as Patcher
 
     # Pipelines
     from .pipelines import AnyToAnyPipeline as AnyToAnyPipeline
