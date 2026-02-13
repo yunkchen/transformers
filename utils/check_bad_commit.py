@@ -106,7 +106,21 @@ def is_bad_commit(target_test, commit):
     if len(o) > 0:
         n_failed = int(o[0])
 
-    return result.returncode != 0, n_failed, n_passed
+    error_message = ""
+    if n_failed > 0:
+        failures_match = re.search(r"={3,} FAILURES ={3,}\n(.+)", result.stdout)
+        if failures_match:
+            first_line = failures_match.group(1).strip()
+            try:
+                line = first_line[: first_line.index(" ")].split(":")[-2]
+                error_message = first_line[first_line.index(" "):]
+                error_message = f"(line {line}) {error_message}"
+            except Exception:
+                error_message = "Cannot retrieve error message."
+        else:
+            error_message = ""
+
+    return result.returncode != 0, n_failed, n_passed, error_message
 
 
 def find_bad_commit(target_test, start_commit, end_commit):
@@ -120,11 +134,36 @@ def find_bad_commit(target_test, start_commit, end_commit):
     Returns:
         `str`: The earliest commit at which `target_test` fails.
     """
+    is_pr_ci = os.environ.get("GITHUB_EVENT_NAME") in ["issue_comment", "pull_request"]
+
+    # For PR comment CI, we "assume" all tests at `end_commit` pass, so any failing test at PR run
+    # is "a new failing test", so we can perform more detailed check with this script.
+    # For example, we want to check if "a failing tes at start_commit" has different error message
+    # than "when it was running on end_commit".
+    #   - if all passing at end_commit: new failing test
+    #   - if all failing at end_commit: get error message and compare
+    #   - if both failing and passing at end_commit: mark it as flaky
 
     # check if `end_commit` fails the test
     # (we only need one failure to conclude the test is flaky on the previous run with `end_commit`)
-    failed_before, _, _ = is_bad_commit(target_test, end_commit)
-    if failed_before:
+    failed_before, n_failed, n_passed, error_message_at_end_commit = is_bad_commit(target_test, end_commit)
+    is_flaky_at_end_commit = ((not is_pr_ci) and n_failed > 0) or (is_pr_ci and n_failed > 0 and n_passed > 0)
+    is_passing_at_end_commit = n_failed == 0
+    is_failing_at_end_commit = n_passed == 0
+
+    # Maybe more detailed
+    if is_flaky_at_end_commit:
+        if not is_pr_ci:
+            return (
+                None,
+                f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run.",
+            )
+        else:
+            return (
+                None,
+                f"flaky: test both passed and failed during the check of the current run on the previous commit: {end_commit}",
+            )
+    elif (not is_pr_ci) and is_failing_at_end_commit:
         return (
             None,
             f"flaky: test passed in the previous run (commit: {end_commit}) but failed (on the same commit) during the check of the current run.",
@@ -141,10 +180,15 @@ def find_bad_commit(target_test, start_commit, end_commit):
     # Now, we are (almost) sure `target_test` is not failing at `end_commit`
     # check if `start_commit` fail the test
     # **IMPORTANT** we only need one pass to conclude the test is flaky on the current run with `start_commit`!
-    _, n_failed, n_passed = is_bad_commit(target_test, start_commit)
+    _, n_failed, n_passed, error_message_at_start_commit = is_bad_commit(target_test, start_commit)
     if n_passed > 0:
         # failed on CI run, but not reproducible here --> don't report
         return None, f"flaky: test fails on the current CI run (commit: {start_commit}) but passes during the check."
+
+    # so we are sure the test fails on both end_commit and start_commit
+    if is_pr_ci and error_message_at_start_commit != error_message_at_end_commit:
+        # TODO: something is wrong?
+        return start_commit, f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
 
     create_script(target_test=target_test)
 
