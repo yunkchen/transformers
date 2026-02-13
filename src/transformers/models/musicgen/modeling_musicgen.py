@@ -51,7 +51,7 @@ from ...modeling_outputs import (
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging
-from ...utils.generic import merge_with_config_defaults
+from ...utils.generic import can_return_tuple, merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder, capture_outputs
 from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel
@@ -1457,6 +1457,7 @@ class MusicgenForConditionalGeneration(MusicgenPreTrainedModel, GenerationMixin)
         )
         return cls(text_encoder=text_encoder, audio_encoder=audio_encoder, decoder=decoder, config=config)
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1472,10 +1473,7 @@ class MusicgenForConditionalGeneration(MusicgenPreTrainedModel, GenerationMixin)
         decoder_inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | Seq2SeqLMOutput:
         r"""
         padding_mask (`torch.BoolTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1535,33 +1533,27 @@ class MusicgenForConditionalGeneration(MusicgenPreTrainedModel, GenerationMixin)
         >>> logits.shape  # (bsz * num_codebooks, tgt_len, vocab_size)
         torch.Size([8, 1, 2048])
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        kwargs_text_encoder = {
-            argument[len("text_encoder_")]: value
-            for argument, value in kwargs.items()
-            if argument.startswith("text_encoder_")
-        }
-
-        kwargs_audio_encoder = {
-            argument[len("audio_encoder_")]: value
-            for argument, value in kwargs.items()
-            if argument.startswith("audio_encoder_")
-        }
-
-        kwargs_decoder = {
-            argument[len("decoder_") :]: value for argument, value in kwargs.items() if argument.startswith("decoder_")
-        }
+        kwargs_text_encoder = {}
+        kwargs_audio_encoder = {}
+        kwargs_decoder = {}
+        common_kwargs = {}
+        for key, value in kwargs.items():
+            if key.startswith("text_encoder_"):
+                kwargs_text_encoder[key[len("text_encoder_"):]] = value
+            elif key.startswith("audio_encoder_"):
+                kwargs_audio_encoder[key[len("audio_encoder_"):]] = value
+            elif key.startswith("decoder_"):
+                kwargs_decoder[key[len("decoder_"):]] = value
+            else:
+                common_kwargs[key] = value
 
         if encoder_outputs is None:
             encoder_outputs = self.text_encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 inputs_embeds=inputs_embeds,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
                 **kwargs_text_encoder,
+                **common_kwargs,
             )
         elif isinstance(encoder_outputs, tuple):
             encoder_outputs = BaseModelOutput(*encoder_outputs)
@@ -1604,23 +1596,18 @@ class MusicgenForConditionalGeneration(MusicgenPreTrainedModel, GenerationMixin)
             decoder_input_ids = audio_codes[0, ...].reshape(bsz * self.decoder.num_codebooks, seq_len)
 
         # Decode
-        decoder_outputs = self.decoder(
+        decoder_outputs: CausalLMOutputWithCrossAttentions = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=attention_mask,
             inputs_embeds=decoder_inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             use_cache=use_cache,
             past_key_values=past_key_values,
-            return_dict=return_dict,
             labels=labels,
             **kwargs_decoder,
+            **common_kwargs,
         )
-
-        if not return_dict:
-            return decoder_outputs + encoder_outputs
 
         return Seq2SeqLMOutput(
             loss=decoder_outputs.loss,
