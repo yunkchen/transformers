@@ -1205,7 +1205,7 @@ class Qwen2VLModel(Qwen2VLPreTrainedModel):
         return position_ids
 
     @merge_with_config_defaults
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1222,7 +1222,7 @@ class Qwen2VLModel(Qwen2VLPreTrainedModel):
         rope_deltas: torch.LongTensor | None = None,
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> Qwen2VLModelOutputWithPast:
+    ) -> tuple | Qwen2VLModelOutputWithPast:
         r"""
         image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
             The temporal, height and width of feature shape of each image in LLM.

@@ -514,7 +514,6 @@ class Siglip2VisionTransformer(Siglip2PreTrainedModel):
 
         self.post_init()
 
-    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -736,7 +735,7 @@ class Siglip2VisionModel(Siglip2PreTrainedModel):
         return self.vision_model.embeddings.patch_embedding
 
     @merge_with_config_defaults
-    @can_return_tuple
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -1028,7 +1027,7 @@ class Siglip2ForImageClassification(Siglip2PreTrainedModel):
     def set_input_embeddings(self, value: nn.Module):
         self.vision_model.embeddings.patch_embedding = value
 
-    @can_return_tuple
+    @capture_outputs
     @auto_docstring
     def forward(
         self,

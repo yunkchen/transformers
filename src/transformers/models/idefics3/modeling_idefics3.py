@@ -703,6 +703,7 @@ class Idefics3Model(Idefics3PreTrainedModel):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
+            use_cache=use_cache,
             cache_position=cache_position,
             **kwargs,
         )

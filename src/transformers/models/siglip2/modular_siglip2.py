@@ -290,7 +290,6 @@ class Siglip2VisionTransformer(SiglipVisionTransformer):
         super().__init__(config)
 
     # Update: add `spatial_shapes` and `attention_mask`
-    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -377,7 +376,7 @@ class Siglip2MultiheadAttentionPoolingHead(SiglipMultiheadAttentionPoolingHead):
 class Siglip2VisionModel(SiglipVisionModel):
     # Update: add `spatial_shapes` and `pixel_attention_mask`
     @merge_with_config_defaults
-    @can_return_tuple
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -566,7 +565,7 @@ class Siglip2Model(SiglipModel):
 
 class Siglip2ForImageClassification(SiglipForImageClassification):
     # Update: add `spatial_shapes` and `pixel_attention_mask`
-    @can_return_tuple
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
