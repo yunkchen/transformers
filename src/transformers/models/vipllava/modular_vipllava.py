@@ -25,7 +25,7 @@ from transformers.models.llava.modeling_llava import (
 
 from ...activations import ACT2FN
 from ...cache_utils import Cache
-from ...modeling_outputs import BaseModelOutputWithPooling
+from ...modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPooling
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging
 from ...utils.generic import can_return_tuple
@@ -96,7 +96,6 @@ class VipLlavaModel(LlavaModel):
         kwargs["output_hidden_states"] = True
         image_outputs = self.vision_tower(
             pixel_values,
-            return_dict=True,
             **kwargs,
         )
 
@@ -144,7 +143,7 @@ class VipLlavaModel(LlavaModel):
 
         if pixel_values is not None:
             image_features = self.get_image_features(
-                pixel_values=pixel_values, vision_feature_layers=vision_feature_layers, return_dict=True
+                pixel_values=pixel_values, vision_feature_layers=vision_feature_layers
             ).pooler_output
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             special_image_mask = self.get_placeholder_mask(
@@ -152,13 +151,12 @@ class VipLlavaModel(LlavaModel):
             )
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-        outputs = self.language_model(
+        outputs: BaseModelOutputWithPast = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            return_dict=True,
             cache_position=cache_position,
             **lm_kwargs,
         )
@@ -247,7 +245,7 @@ class VipLlavaForConditionalGeneration(LlavaForConditionalGeneration):
             vision_feature_layers if vision_feature_layers is not None else self.config.vision_feature_layers
         )
 
-        outputs = self.model(
+        outputs: VipLlavaModelOutputWithPast = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
             attention_mask=attention_mask,
@@ -256,12 +254,11 @@ class VipLlavaForConditionalGeneration(LlavaForConditionalGeneration):
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             vision_feature_layers=vision_feature_layers,
-            return_dict=True,
             cache_position=cache_position,
             **lm_kwargs,
         )
 
-        hidden_states = outputs[0]
+        hidden_states = outputs.last_hidden_state
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])

@@ -433,7 +433,6 @@ class LayoutLMv2PreTrainedModel(PreTrainedModel):
     config: LayoutLMv2Config
     base_model_prefix = "layoutlmv2"
     input_modalities = ("image", "text")
-    _can_record_outputs = {"hidden_states": LayoutLMv2Layer, "attentions": LayoutLMv2Attention}
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -567,6 +566,8 @@ class LayoutLMv2Pooler(nn.Module):
 
 @auto_docstring
 class LayoutLMv2Model(LayoutLMv2PreTrainedModel):
+    _can_record_outputs = {"hidden_states": LayoutLMv2Layer, "attentions": LayoutLMv2Attention}
+
     def __init__(self, config):
         requires_backends(self, "detectron2")
         super().__init__(config)
@@ -818,6 +819,7 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
     def get_input_embeddings(self):
         return self.layoutlmv2.embeddings.word_embeddings
 
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -829,10 +831,7 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | SequenceClassifierOutput:
         r"""
         input_ids (`torch.LongTensor` of shape `batch_size, sequence_length`):
@@ -899,8 +898,6 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
         ```
         """
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -934,7 +931,7 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
             position_ids=visual_position_ids,
         )
 
-        outputs = self.layoutlmv2(
+        outputs: BaseModelOutputWithPooling = self.layoutlmv2(
             input_ids=input_ids,
             bbox=bbox,
             image=image,
@@ -942,9 +939,7 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
         if input_ids is not None:
             input_shape = input_ids.size()
@@ -952,7 +947,10 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
             input_shape = inputs_embeds.size()[:-1]
 
         seq_length = input_shape[1]
-        sequence_output, final_image_embeddings = outputs[0][:, :seq_length], outputs[0][:, seq_length:]
+        sequence_output, final_image_embeddings = (
+            outputs.last_hidden_state[:, :seq_length],
+            outputs.last_hidden_state[:, seq_length:],
+        )
 
         cls_final_output = sequence_output[:, 0, :]
 
@@ -988,9 +986,6 @@ class LayoutLMv2ForSequenceClassification(LayoutLMv2PreTrainedModel):
             elif self.config.problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
 
         return SequenceClassifierOutput(
             loss=loss,
@@ -1022,6 +1017,7 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
     def get_input_embeddings(self):
         return self.layoutlmv2.embeddings.word_embeddings
 
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1033,10 +1029,7 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | TokenClassifierOutput:
         r"""
         input_ids (`torch.LongTensor` of shape `batch_size, sequence_length`):
@@ -1112,9 +1105,7 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
         ```
         """
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.layoutlmv2(
+        outputs: BaseModelOutputWithPooling = self.layoutlmv2(
             input_ids=input_ids,
             bbox=bbox,
             image=image,
@@ -1122,9 +1113,7 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
         if input_ids is not None:
             input_shape = input_ids.size()
@@ -1133,7 +1122,7 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
 
         seq_length = input_shape[1]
         # only take the text part of the output representations
-        sequence_output = outputs[0][:, :seq_length]
+        sequence_output = outputs.last_hidden_state[:, :seq_length]
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
 
@@ -1141,10 +1130,6 @@ class LayoutLMv2ForTokenClassification(LayoutLMv2PreTrainedModel):
         if labels is not None:
             loss_fct = CrossEntropyLoss()
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
 
         return TokenClassifierOutput(
             loss=loss,
@@ -1173,6 +1158,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
     def get_input_embeddings(self):
         return self.layoutlmv2.embeddings.word_embeddings
 
+    @capture_outputs
     @auto_docstring
     def forward(
         self,
@@ -1185,10 +1171,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         start_positions: torch.LongTensor | None = None,
         end_positions: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | QuestionAnsweringModelOutput:
         r"""
         input_ids (`torch.LongTensor` of shape `batch_size, sequence_length`):
@@ -1248,7 +1231,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
         >>> predicted_answer_tokens = encoding.input_ids.squeeze()[predicted_start_idx : predicted_end_idx + 1]
         >>> predicted_answer = processor.tokenizer.decode(predicted_answer_tokens)
         >>> predicted_answer  # results are not good without further fine-tuning
-        '44 a. m. to 12 : 25 p. m. 12 : 25 to 12 : 58 p. m. 12 : 58 to 4 : 00 p. m. 2 : 00 to 5 : 00 p. m. coffee break coffee will be served for men and women in the lobby adjacent to exhibit area. please move into exhibit area. ( exhibits open ) trrf general session ( part | ) presiding : lee a. waller trrf vice president “ introductory remarks ” lee a. waller, trrf vice presi - dent individual interviews with trrf public board members and sci - entific advisory council mem - bers conducted by trrf treasurer philip g. kuehn to get answers which the public refrigerated warehousing industry is looking for. plus questions from'
+        '44 a. m. to 12 : 25 p. m. 12 : 25 to 12 : 58 p. m. 12 : 58 to 4 : 00 p. m. 2 : 00 to 5 : 00 p. m. coffee break coffee will be served for men and women in the lobby adjacent to exhibit area. please move into exhibit area. ( exhibits open ) trrf general session ( part | ) presiding : lee a. waller trrf vice president " introductory remarks " lee a. waller, trrf vice presi - dent individual interviews with trrf public board members and sci - entific advisory council mem - bers conducted by trrf treasurer philip g. kuehn to get answers which the public refrigerated warehousing industry is looking for. plus questions from'
         ```
 
         ```python
@@ -1262,9 +1245,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
         ```
         """
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.layoutlmv2(
+        outputs: BaseModelOutputWithPooling = self.layoutlmv2(
             input_ids=input_ids,
             bbox=bbox,
             image=image,
@@ -1272,9 +1253,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            **kwargs,
         )
 
         if input_ids is not None:
@@ -1284,7 +1263,7 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
 
         seq_length = input_shape[1]
         # only take the text part of the output representations
-        sequence_output = outputs[0][:, :seq_length]
+        sequence_output = outputs.last_hidden_state[:, :seq_length]
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -1307,10 +1286,6 @@ class LayoutLMv2ForQuestionAnswering(LayoutLMv2PreTrainedModel):
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
             total_loss = (start_loss + end_loss) / 2
-
-        if not return_dict:
-            output = (start_logits, end_logits) + outputs[2:]
-            return ((total_loss,) + output) if total_loss is not None else output
 
         return QuestionAnsweringModelOutput(
             loss=total_loss,

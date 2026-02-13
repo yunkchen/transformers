@@ -44,6 +44,7 @@ from ...modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging
+from ...utils.output_capturing import OutputRecorder
 from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForTextEncoding
 from .configuration_musicgen_melody import MusicgenMelodyConfig, MusicgenMelodyDecoderConfig
@@ -404,6 +405,12 @@ class MusicgenMelodyDecoder(MusicgenMelodyPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`MusicgenMelodyDecoderLayer`]
     """
+
+    _can_record_outputs = {
+        "hidden_states": MusicgenMelodyDecoderLayer,
+        "attentions": OutputRecorder(MusicgenMelodyAttention, index=1, layer_name="self_attn"),
+        "cross_attentions": OutputRecorder(MusicgenMelodyAttention, index=1, layer_name="encoder_attn"),
+    }
 
     def __init__(self, config: MusicgenMelodyDecoderConfig):
         super().__init__(config)
