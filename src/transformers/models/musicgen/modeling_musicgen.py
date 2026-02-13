@@ -1539,11 +1539,11 @@ class MusicgenForConditionalGeneration(MusicgenPreTrainedModel, GenerationMixin)
         common_kwargs = {}
         for key, value in kwargs.items():
             if key.startswith("text_encoder_"):
-                kwargs_text_encoder[key[len("text_encoder_"):]] = value
+                kwargs_text_encoder[key[len("text_encoder_") :]] = value
             elif key.startswith("audio_encoder_"):
-                kwargs_audio_encoder[key[len("audio_encoder_"):]] = value
+                kwargs_audio_encoder[key[len("audio_encoder_") :]] = value
             elif key.startswith("decoder_"):
-                kwargs_decoder[key[len("decoder_"):]] = value
+                kwargs_decoder[key[len("decoder_") :]] = value
             else:
                 common_kwargs[key] = value
 
