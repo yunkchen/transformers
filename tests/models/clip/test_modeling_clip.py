@@ -215,6 +215,9 @@ class CLIPVisionModelTest(CLIPModelTesterMixin, unittest.TestCase):
         self.model_tester = CLIPVisionModelTester(self)
         self.config_tester = ConfigTester(self, config_class=CLIPVisionConfig, has_text_modality=False, hidden_size=37)
 
+    def test_batching_equivalence(self):
+        assert 3 == 4
+
     def test_foo(self):
         assert 1 == 3
         self.config_tester.run_common_tests()
@@ -402,6 +405,9 @@ class CLIPTextModelTest(CLIPModelTesterMixin, unittest.TestCase):
     def setUp(self):
         self.model_tester = CLIPTextModelTester(self)
         self.config_tester = ConfigTester(self, config_class=CLIPTextConfig, hidden_size=37)
+
+    def test_batching_equivalence(self):
+        raise ValueError("test test!!!")
 
     def test_config(self):
         self.config_tester.run_common_tests()
