@@ -179,7 +179,7 @@ def find_bad_commit(target_test, start_commit, end_commit):
         return result
 
     # so we are sure the test fails on both end_commit and start_commit
-    if is_pr_ci and error_message_at_end_commit == "" and error_message_at_start_commit != error_message_at_end_commit:
+    if is_pr_ci and error_message_at_end_commit != "" and error_message_at_start_commit != error_message_at_end_commit:
         # TODO: something is wrong?
         result["bad_commit"] = start_commit
         result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
