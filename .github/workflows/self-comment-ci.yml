@@ -126,7 +126,8 @@ jobs:
       - name: Reply to the comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PREFIX: '[Workflow Run ⚙️](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n'
+          PREFIX: '[Workflow Run ⚙️](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+          INFO: '\n\nThis comment contains \`run-slow\`, running the specified jobs'
           BODY: '\n\nmodels: ${{ needs.get-tests.outputs.models }}\nquantizations: ${{ needs.get-tests.outputs.quantizations }}'
           github_repository: ${{ github.repository }}
           pr_number: ${{ needs.get-pr-number.outputs.PR_NUMBER }}
@@ -136,7 +137,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/${github_repository}/issues/${pr_number}/comments" \
-            -f body="$(echo -e "$PREFIX")This comment contains \`run-slow\`, running the specified jobs: $(echo -e "$BODY")"
+            -f body="$(echo -e "$PREFIX")$(echo -e "$INFO"): $(echo -e "$BODY")"
 
   create_run:
     name: Create run
