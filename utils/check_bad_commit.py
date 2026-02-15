@@ -124,7 +124,7 @@ def find_bad_commit(target_test, start_commit, end_commit):
         end_commit (`str`): The earliest commit (exclusive).
 
     Returns:
-        `str`: The earliest commit at which `target_test` fails.
+        `dict`: A dict containing the info about the earliest commit at which `target_test` fails.
     """
     result = {
         "bad_commit": None,
@@ -348,7 +348,9 @@ if __name__ == "__main__":
                     commit_info = get_commit_info(bad_commit)
                     commit_info_cache[bad_commit] = commit_info
 
-                info.update(copy.deepcopy(commit_info).pop("commit"))
+                commit_info_copied = copy.deepcopy(commit_info)
+                commit_info_copied.pop("commit")
+                info.update(commit_info_copied)
                 # put failure message toward the end
                 info = {k: v for k, v in info.items() if not k.startswith(("failure_at_", "job_link"))} | {k: v for k, v in info.items() if k.startswith(("failure_at_", "job_link"))}
 
