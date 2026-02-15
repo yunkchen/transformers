@@ -128,9 +128,9 @@ def find_bad_commit(target_test, start_commit, end_commit):
     result = {
         "bad_commit": None,
         "status": None,
-        "error_at_start_commit": None,
-        "error_at_end_commit": None,
-        "error_at_bad_commit": None,
+        "failure_at_workflow_run_commit": None,
+        "failure_at_base_commit": None,
+        "failure_at_bad_commit ": None,
     }
 
 
@@ -183,9 +183,9 @@ def find_bad_commit(target_test, start_commit, end_commit):
         # TODO: something is wrong?
         result["bad_commit"] = start_commit
         result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
-        result["error_at_start_commit"] = error_message_at_start_commit
-        result["error_at_end_commit"] = error_message_at_end_commit
-        result["error_at_bad_commit"] = error_message_at_start_commit
+        result["failure_at_workflow_run_commit"] = error_message_at_start_commit
+        result["failure_at_base_commit"] = error_message_at_end_commit
+        result["failure_at_bad_commit "] = error_message_at_start_commit
         return result
 
     create_script(target_test=target_test)
@@ -225,9 +225,9 @@ git bisect run python3 target_script.py
 
     result["bad_commit"] = bad_commit
     result["status"] = "git bisect found the bad commit."
-    result["error_at_start_commit"] = error_message_at_start_commit
-    result["error_at_end_commit"] = error_message_at_end_commit
-    result["error_at_bad_commit"] = error_message_at_start_commit
+    result["failure_at_workflow_run_commit"] = error_message_at_start_commit
+    result["failure_at_base_commit"] = error_message_at_end_commit
+    result["failure_at_bad_commit "] = error_message_at_start_commit
     return result
 
 
@@ -330,23 +330,25 @@ if __name__ == "__main__":
 
             failed_tests_with_bad_commits = []
             for failure in failed_tests:
-                test, trace = failure["line"], failure["trace"]
+                test = failure["line"]
                 bad_commit_info = find_bad_commit(
                     target_test=test, start_commit=args.start_commit, end_commit=args.end_commit
                 )
-                info = {"test": test, "commit": bad_commit_info["bad_commit"]}
+                info = {"test": test}
                 info.update(bad_commit_info)
 
-                commit = bad_commit_info["bad_commit"]
+                bad_commit = bad_commit_info["bad_commit"]
 
-                if commit in commit_info_cache:
-                    commit_info = commit_info_cache[commit]
+                if bad_commit in commit_info_cache:
+                    commit_info = commit_info_cache[bad_commit]
                 else:
-                    commit_info = get_commit_info(commit)
-                    commit_info_cache[commit] = commit_info
+                    commit_info = get_commit_info(bad_commit)
+                    commit_info_cache[bad_commit] = commit_info
 
                 info.update(commit_info)
-                info["trace"] = trace
+                # put failure message toward the end
+                info = {k: v for k, v in info.items() if not k.startswith(("failure_at_", "job_link"))} | {k: v for k, v in info.items() if k.startswith(("failure_at_", "job_link"))}
+
                 failed_tests_with_bad_commits.append(info)
 
             # If no single-gpu test failures, remove the key
