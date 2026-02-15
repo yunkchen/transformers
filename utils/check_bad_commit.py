@@ -131,7 +131,7 @@ def find_bad_commit(target_test, start_commit, end_commit):
         "status": None,
         "failure_at_workflow_commit": None,
         "failure_at_base_commit": None,
-        "failure_at_bad_commit ": None,
+        "failure_at_bad_commit": None,
     }
 
 
@@ -186,7 +186,7 @@ def find_bad_commit(target_test, start_commit, end_commit):
         result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
         result["failure_at_workflow_commit"] = failure_at_workflow_commit
         result["failure_at_base_commit"] = failure_at_base_commit
-        result["failure_at_bad_commit "] = failure_at_workflow_commit
+        result["failure_at_bad_commit"] = failure_at_workflow_commit
         return result
 
     create_script(target_test=target_test)
@@ -230,7 +230,7 @@ git bisect run python3 target_script.py
     result["status"] = "git bisect found the bad commit."
     result["failure_at_workflow_commit"] = failure_at_workflow_commit
     result["failure_at_base_commit"] = failure_at_base_commit
-    result["failure_at_bad_commit "] = failure_at_bad_commit
+    result["failure_at_bad_commit"] = failure_at_bad_commit
     return result
 
 
