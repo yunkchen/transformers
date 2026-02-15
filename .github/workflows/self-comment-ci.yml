@@ -265,22 +265,26 @@ jobs:
                 model_lines = []
                 for device, failures in model_result.items():
                     
-                    # Filter out None commits and extract just the test names
-                    test_names = [
-                        failure['test'] 
-                        for failure in failures 
+                    filtered_failures = [
+                        failure for failure in failures 
                         if isinstance(failure, dict) and failure.get('bad_commit') is not None
                     ]
 
                     # Add tests to model lines
-                    for idx, test_name in enumerate(test_names):
+                    for idx, failure in enumerate(filtered_failures):
                         if idx == 0:
-                            job_link = failures[idx]['job_link']
+                            job_link = failure['job_link']
                             model_lines.append(f"- [{model}]({job_link}):")
-          
-                        model_lines.append(f"    {test_name}")
-
-                # Only add model section if it has tests
+        
+                        test_name = failure['test']
+                        status = failure.get('status', '')
+                        if "DIFFERENT error message" in status:
+                            indicator = "(❌ ⟹ ❌ )"
+                        else:
+                            indicator = "(✅ ⟹ ❌ )"
+        
+                        model_lines.append(f"    {test_name} {indicator}")
+        
                 if len(model_lines) > 0:
                     lines.extend(model_lines)
                     lines.append("")  # Empty line between models

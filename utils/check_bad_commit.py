@@ -181,7 +181,6 @@ def find_bad_commit(target_test, start_commit, end_commit):
 
     # so we are sure the test fails on both end_commit and start_commit
     if is_pr_ci and failure_at_base_commit != "" and failure_at_workflow_commit != failure_at_base_commit:
-        # TODO: something is wrong?
         result["bad_commit"] = start_commit
         result["status"] = f"test fails both on the current commit ({start_commit}) and the previous commit ({end_commit}), but with DIFFERENT error message!"
         result["failure_at_workflow_commit"] = failure_at_workflow_commit
