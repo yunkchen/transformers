@@ -375,8 +375,8 @@ jobs:
             echo "| Context | Commit | Description |"
             echo "|---------|--------|-------------|"
             echo "| RUN | ${run_commit_link} | workflow commit (merge commit) |"
-            echo "| PR | ${pr_commit_link} | branch commit |"
-            echo "| main | ${main_commit_link} | base commit |"
+            echo "| PR | ${pr_commit_link} | branch commit (from PR) |"
+            echo "| main | ${main_commit_link} | base commit (on `main`) |"
             echo ''
 
             # Check infrastructure health - simple and clean!
