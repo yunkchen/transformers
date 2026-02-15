@@ -220,7 +220,7 @@ git bisect run python3 target_script.py
     failure_at_bad_commit = ""
     if len(commits) > 0:
         bad_commit = commits[0]
-        _, _, _, failure_at_bad_commit = is_bad_commit(target_test, end_commit)
+        _, _, _, failure_at_bad_commit = is_bad_commit(target_test, bad_commit)
 
     print(f"Between `start_commit` {start_commit} and `end_commit` {end_commit}")
     print(f"bad_commit: {bad_commit}\n")
@@ -336,6 +336,7 @@ if __name__ == "__main__":
                 bad_commit_info = find_bad_commit(
                     target_test=test, start_commit=args.start_commit, end_commit=args.end_commit
                 )
+                bad_commit_info.pop("commit")
                 info = {"test": test}
                 info.update(bad_commit_info)
 
