@@ -112,7 +112,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/${github_repository}/issues/${pr_number}/comments" \
-            -f body="💔 This comment contains \`run-slow\`, but unknown error occurred and [the workflow run]($GITHUB_RUN_URL) aborted!"
+            -f body="[Workflow Run ⚙️]($GITHUB_RUN_URL)\n\n💔 This comment contains \`run-slow\`, but unknown error occurred and [the workflow run]($GITHUB_RUN_URL) aborted!"
 
   reply_to_comment:
     name: Reply to the comment
@@ -134,7 +134,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/${github_repository}/issues/${pr_number}/comments" \
-            -f body="This comment contains \`run-slow\`, running the specified jobs: $(echo -e "$BODY")"
+            -f body="[Workflow Run ⚙️]($GITHUB_RUN_URL)\n\nThis comment contains \`run-slow\`, running the specified jobs: $(echo -e "$BODY")"
 
   create_run:
     name: Create run
