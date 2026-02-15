@@ -6,7 +6,7 @@ on:
       - created
     branches-ignore:
       - main
-  pull_request:
+#  pull_request:
 
 permissions: read-all
 
