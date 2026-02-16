@@ -2134,7 +2134,7 @@ class PreTrainedTokenizerBase(PushToHubMixin):
 
         return file_names + vocab_files + (added_tokens_file,)
 
-    def clean_up_tokenization_spaces(self, text: str) -> str:
+    def clean_up_tokenization(self, text: str) -> str:
         """
         Clean up tokenization spaces in a given text.
         This method is mostly for remote code support.
