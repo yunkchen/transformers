@@ -6,7 +6,7 @@ on:
       - created
     branches-ignore:
       - main
-#  pull_request:
+  pull_request:
 
 permissions: read-all
 
@@ -379,7 +379,7 @@ jobs:
             echo "|---------|--------|-------------|"
             echo "| RUN | ${run_commit_link} | workflow commit (merge commit) |"
             echo "| PR | ${pr_commit_link} | branch commit (from PR) |"
-            echo "| main | ${main_commit_link} | base commit (on `main`) |"
+            echo "| main | ${main_commit_link} | base commit (on \`main\`) |"
             echo ''
 
             # Check infrastructure health - simple and clean!

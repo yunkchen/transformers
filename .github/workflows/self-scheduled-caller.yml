@@ -6,7 +6,7 @@ on:
     - cron: "17 2 * * *"
   push:
     branches:
-      - check_new_failures_reporting_5
+      - check_new_failures_reporting_5xxxx
   workflow_dispatch:
     inputs:
       prev_workflow_run_id:
