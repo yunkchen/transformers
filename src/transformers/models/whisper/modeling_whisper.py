@@ -890,6 +890,7 @@ class WhisperModel(WhisperPreTrainedModel):
 
         return input_features
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -953,7 +954,6 @@ class WhisperModel(WhisperPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if encoder_outputs is None:

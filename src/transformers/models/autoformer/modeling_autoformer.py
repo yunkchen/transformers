@@ -998,7 +998,6 @@ class AutoformerDecoder(AutoformerPreTrainedModel):
                 If `use_cache` is True, `past_key_values` key value states are returned and can be used to speed up
                 decoding (see `past_key_values`).
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning(
@@ -1228,6 +1227,7 @@ class AutoformerModel(AutoformerPreTrainedModel):
             )
         return reshaped_lagged_sequence, features, loc, scale, static_feat
 
+    @merge_with_config_defaults
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -1338,7 +1338,6 @@ class AutoformerModel(AutoformerPreTrainedModel):
 
         >>> last_hidden_state = outputs.last_hidden_state
         ```"""
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         transformer_inputs, temporal_features, loc, scale, static_feat = self.create_network_inputs(
             past_values=past_values,
             past_time_features=past_time_features,

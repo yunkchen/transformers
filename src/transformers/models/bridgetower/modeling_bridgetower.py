@@ -1011,9 +1011,7 @@ class BridgeTowerTextModel(BridgeTowerPreTrainedModel):
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPoolingAndCrossAttentions:
-        if self.config.is_decoder:
-            use_cache = use_cache if use_cache is not None else self.config.use_cache
-        else:
+        if not self.config.is_decoder:
             use_cache = False
 
         if self.gradient_checkpointing and self.training:

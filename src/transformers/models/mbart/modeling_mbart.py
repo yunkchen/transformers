@@ -708,7 +708,6 @@ class MBartDecoder(MBartPreTrainedModel):
                 Indices depicting the position of the input sequence tokens in the sequence. It is used to update the
                 cache in the correct position and to infer the complete sequence length.
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         # retrieve input_ids and inputs_embeds
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -835,6 +834,7 @@ class MBartModel(MBartPreTrainedModel):
         self.encoder.embed_tokens = self.shared
         self.decoder.embed_tokens = self.shared
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -872,7 +872,6 @@ class MBartModel(MBartPreTrainedModel):
             Default behavior: generate a tensor that ignores pad tokens in `decoder_input_ids`. Causal mask will also
             be used by default.
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # different to other models, MBart automatically creates decoder_input_ids from

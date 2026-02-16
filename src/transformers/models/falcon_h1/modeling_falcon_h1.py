@@ -1281,7 +1281,6 @@ class FalconH1Model(FalconH1PreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1294,8 +1293,6 @@ class FalconH1Model(FalconH1PreTrainedModel):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPast:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 

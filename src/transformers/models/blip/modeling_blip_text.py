@@ -600,9 +600,7 @@ class BlipTextModel(BlipTextPreTrainedModel):
             If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
             `past_key_values`).
         """
-        if is_decoder:
-            use_cache = use_cache if use_cache is not None else self.config.use_cache
-        else:
+        if not is_decoder:
             use_cache = False
 
         if input_ids is not None and inputs_embeds is not None:

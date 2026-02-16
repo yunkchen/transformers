@@ -1126,7 +1126,6 @@ class BambaModel(BambaPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1139,8 +1138,6 @@ class BambaModel(BambaPreTrainedModel):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[BambaFlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 

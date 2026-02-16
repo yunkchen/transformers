@@ -929,7 +929,6 @@ class ChameleonModel(ChameleonPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -943,8 +942,6 @@ class ChameleonModel(ChameleonPreTrainedModel):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple | BaseModelOutputWithPast:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning_once(
                 "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."

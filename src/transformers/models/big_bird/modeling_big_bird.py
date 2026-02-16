@@ -1594,7 +1594,6 @@ class BigBirdModel(BigBirdPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1610,9 +1609,7 @@ class BigBirdModel(BigBirdPreTrainedModel):
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPoolingAndCrossAttentions:
-        if self.config.is_decoder:
-            use_cache = use_cache if use_cache is not None else self.config.use_cache
-        else:
+        if not self.config.is_decoder:
             use_cache = False
         if kwargs.get("output_attentions") is None:
             kwargs["output_attentions"] = self.config.output_attentions

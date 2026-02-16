@@ -406,7 +406,6 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -439,7 +438,6 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
         # pop recordable flags so we don't pass them twice into blocks
         output_attentions = kwargs.pop("output_attentions", self.config.output_attentions)
         output_hidden_states = kwargs.pop("output_hidden_states", self.config.output_hidden_states)
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")

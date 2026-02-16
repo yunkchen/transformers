@@ -31,7 +31,6 @@ from ...configuration_utils import PreTrainedConfig
 from ...modeling_outputs import BackboneOutput, BaseModelOutput, BaseModelOutputWithPooling, ImageClassifierOutput
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging, torch_int
-from ...utils.generic import can_return_tuple
 from ...utils.output_capturing import capture_outputs
 
 
@@ -353,7 +352,6 @@ class Dinov2WithRegistersBackbone(Dinov2Backbone):
         return self.embeddings.patch_embeddings
 
     @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,

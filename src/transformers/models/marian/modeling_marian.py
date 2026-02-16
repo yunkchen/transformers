@@ -566,8 +566,6 @@ class MarianDecoder(MarianPreTrainedModel):
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(

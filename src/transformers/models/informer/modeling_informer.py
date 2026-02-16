@@ -961,7 +961,6 @@ class InformerDecoder(InformerPreTrainedModel):
                 Indices depicting the position of the input sequence tokens in the sequence. It is used to update the
                 cache in the correct position and to infer the complete sequence length.
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         input_shape = inputs_embeds.size()[:-1]
         # initialize `past_key_values`
@@ -1168,6 +1167,7 @@ class InformerModel(InformerPreTrainedModel):
 
         return transformer_inputs, loc, scale, static_feat
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -1309,7 +1309,6 @@ class InformerModel(InformerPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         transformer_inputs, loc, scale, static_feat = self.create_network_inputs(

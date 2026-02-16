@@ -47,7 +47,7 @@ from ...masking_utils import create_causal_mask
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from ...modeling_utils import PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import auto_docstring, can_return_tuple, is_torchdynamo_compiling, logging
+from ...utils import auto_docstring, is_torchdynamo_compiling, logging
 from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import capture_outputs
 from .configuration_bamba import BambaConfig
@@ -797,7 +797,6 @@ class BambaModel(BambaPreTrainedModel):
 
     @merge_with_config_defaults
     @capture_outputs
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -810,8 +809,6 @@ class BambaModel(BambaPreTrainedModel):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[BambaFlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 

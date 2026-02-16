@@ -29,6 +29,7 @@ from ...modeling_outputs import (
 )
 from ...modeling_utils import PreTrainedModel
 from ...utils import auto_docstring, can_return_tuple
+from ...utils.generic import merge_with_config_defaults
 from ..bart.modeling_bart import (
     BartClassificationHead,
     BartDecoder,
@@ -96,6 +97,7 @@ class PLBartModel(PLBartPreTrainedModel):
         self.encoder.embed_tokens = self.shared
         self.decoder.embed_tokens = self.shared
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -140,7 +142,6 @@ class PLBartModel(PLBartPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # different to other models, PLBart automatically creates decoder_input_ids from

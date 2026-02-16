@@ -265,7 +265,6 @@ class ConvNextModel(ConvNextPreTrainedModel):
         self.post_init()
 
     @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def forward(
         self, pixel_values: torch.FloatTensor | None = None, **kwargs: Unpack[TransformersKwargs]
@@ -362,7 +361,6 @@ class ConvNextBackbone(BackboneMixin, ConvNextPreTrainedModel):
         self.post_init()
 
     @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,

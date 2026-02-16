@@ -878,6 +878,7 @@ class Kosmos2_5TextTransformer(nn.Module):
         self.layer_norm = nn.LayerNorm(config.embed_dim, config.layer_norm_eps)
         self.gradient_checkpointing = False
 
+    @merge_with_config_defaults
     def forward(
         self,
         input_ids: torch.Tensor | None = None,
@@ -891,8 +892,6 @@ class Kosmos2_5TextTransformer(nn.Module):
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"

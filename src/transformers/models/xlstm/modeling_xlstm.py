@@ -1430,7 +1430,6 @@ class xLSTMModel(xLSTMPreTrainedModel):
         output_hidden_states = kwargs.get("output_hidden_states")
         if output_hidden_states is None:
             output_hidden_states = self.config.output_hidden_states
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         if self.training and use_cache:
             use_cache = False
         if self.gradient_checkpointing and self.training and use_cache:

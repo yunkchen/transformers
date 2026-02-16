@@ -579,7 +579,6 @@ class Dinov2WithRegistersBackbone(BackboneMixin, Dinov2WithRegistersPreTrainedMo
         return self.embeddings.patch_embeddings
 
     @capture_outputs(tie_last_hidden_states=False)
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,

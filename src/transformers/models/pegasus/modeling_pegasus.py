@@ -642,8 +642,6 @@ class PegasusDecoder(PegasusPreTrainedModel):
         cache_position=None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         # retrieve input_ids and inputs_embeds
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
@@ -791,6 +789,7 @@ class PegasusModel(PegasusPreTrainedModel):
         """
         return (self.encoder.get_position_embeddings(), self.decoder.get_position_embeddings())
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -846,7 +845,6 @@ class PegasusModel(PegasusPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if encoder_outputs is None:

@@ -38,6 +38,7 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, is_torchdynamo_compiling, logging
 from ...utils.deprecation import deprecate_kwarg
+from ...utils.generic import merge_with_config_defaults
 from .configuration_pegasus_x import PegasusXConfig
 
 
@@ -974,6 +975,7 @@ class PegasusXDecoder(PegasusXPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @merge_with_config_defaults
     def forward(
         self,
         input_ids=None,
@@ -1048,7 +1050,6 @@ class PegasusXDecoder(PegasusXPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # retrieve input_ids and inputs_embeds
@@ -1224,6 +1225,7 @@ class PegasusXModel(PegasusXPreTrainedModel):
         """
         return (self.encoder.get_position_embeddings(), self.decoder.get_position_embeddings())
 
+    @merge_with_config_defaults
     @auto_docstring
     def forward(
         self,
@@ -1279,7 +1281,6 @@ class PegasusXModel(PegasusXPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if encoder_outputs is None:

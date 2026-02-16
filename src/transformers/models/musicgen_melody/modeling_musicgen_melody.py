@@ -44,6 +44,7 @@ from ...modeling_outputs import BaseModelOutputWithPast, ModelOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs, auto_docstring, logging
+from ...utils.generic import merge_with_config_defaults
 from ...utils.output_capturing import OutputRecorder
 from ..auto.configuration_auto import AutoConfig
 from ..auto.modeling_auto import AutoModel, AutoModelForTextEncoding
@@ -443,6 +444,7 @@ class MusicgenMelodyDecoder(MusicgenMelodyPreTrainedModel):
 
     @auto_docstring
     # Ignore copy
+    @merge_with_config_defaults
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -493,7 +495,6 @@ class MusicgenMelodyDecoder(MusicgenMelodyPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # retrieve input_ids and inputs_embeds
@@ -613,6 +614,7 @@ class MusicgenMelodyModel(MusicgenMelodyPreTrainedModel):
 
     @auto_docstring
     # Ignore copy
+    @merge_with_config_defaults
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -663,7 +665,6 @@ class MusicgenMelodyModel(MusicgenMelodyPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, past_key_values, dec_hidden, dec_attn)

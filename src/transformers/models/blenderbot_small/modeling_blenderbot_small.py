@@ -550,8 +550,6 @@ class BlenderbotSmallDecoder(BlenderbotSmallPreTrainedModel):
         cache_position=None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPastAndCrossAttentions:
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
         # retrieve input_ids and inputs_embeds
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
@@ -676,6 +674,7 @@ class BlenderbotSmallModel(BlenderbotSmallPreTrainedModel):
         self.encoder.embed_tokens = self.shared
         self.decoder.embed_tokens = self.shared
 
+    @merge_with_config_defaults
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -724,7 +723,6 @@ class BlenderbotSmallModel(BlenderbotSmallPreTrainedModel):
         >>> list(last_hidden_states.shape)
         [1, 3, 512]
         ```"""
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if encoder_outputs is None:
             encoder_outputs: BaseModelOutput = self.encoder(

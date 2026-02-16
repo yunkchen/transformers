@@ -1026,7 +1026,6 @@ class Zamba2Model(ZambaModel, Zamba2PreTrainedModel):
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPast:
         output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(

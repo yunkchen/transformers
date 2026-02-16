@@ -463,6 +463,7 @@ class DiaModel(DiaPreTrainedModel):
         self.decoder = DiaDecoder(config.decoder_config)
         self.post_init()
 
+    @merge_with_config_defaults
     @auto_docstring
     @can_return_tuple
     def forward(
@@ -504,8 +505,6 @@ class DiaModel(DiaPreTrainedModel):
             raise ValueError(
                 "You should either provide text ids or the cached text encodings. Neither has been found."
             )
-
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if self.is_gradient_checkpointing and self.training:
             if use_cache:

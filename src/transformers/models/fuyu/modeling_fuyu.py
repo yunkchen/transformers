@@ -176,7 +176,6 @@ class FuyuModel(FuyuPreTrainedModel):
         image_patches_indices (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Tensor of indices of the image patches in the input_ids tensor.
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -243,6 +242,7 @@ class FuyuForCausalLM(FuyuPreTrainedModel, GenerationMixin):
     def set_input_embeddings(self, value):
         self.model.set_input_embeddings(value)
 
+    @merge_with_config_defaults
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -295,8 +295,6 @@ class FuyuForCausalLM(FuyuPreTrainedModel, GenerationMixin):
         >>> print(generation_text[0])
         A blue bus parked on the side of a road.
         ```"""
-
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         outputs = self.model(
             input_ids=input_ids,

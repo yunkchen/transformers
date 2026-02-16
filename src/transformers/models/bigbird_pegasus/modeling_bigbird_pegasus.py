@@ -1932,6 +1932,7 @@ class BigBirdPegasusModel(BigBirdPegasusPreTrainedModel):
         self.encoder.embed_tokens = self.shared
         self.decoder.embed_tokens = self.shared
 
+    @merge_with_config_defaults
     @can_return_tuple
     @auto_docstring
     def forward(
@@ -1973,8 +1974,6 @@ class BigBirdPegasusModel(BigBirdPegasusPreTrainedModel):
             decoder_input_ids = shift_tokens_right(
                 input_ids, self.config.pad_token_id, self.config.decoder_start_token_id
             )
-
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
 
         if encoder_outputs is None:
             encoder_outputs: BaseModelOutput = self.encoder(
