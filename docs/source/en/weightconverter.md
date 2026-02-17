@@ -16,11 +16,139 @@ rendered properly in your Markdown viewer.
 
 # Dynamic weight loading
 
-Checkpoints are often serialized in a format that does not match what a model expects at runtime. Quantization and parallelism frequently require reshaping, splitting, or merging tensors into the expected model format instead of loading weights as-is.
+Checkpoints are often serialized in a format that does not match what a model expects at runtime. Common scenarios include:
+
+1. **Fused weights**: Checkpoints store separate `gate_proj` and `up_proj` weights, but the model uses a fused `gate_up_proj` for efficiency.
+2. **MoE expert consolidation**: Individual expert weights (`experts.0.weight`, `experts.1.weight`, ...) need to be stacked into a single 3D tensor.
+3. **Legacy naming**: Old checkpoints use different naming conventions (e.g., `LayerNorm.gamma` vs `LayerNorm.weight`).
+4. **Quantization**: Weights may be stored in quantized formats that need deserialization.
 
 Dynamic weight loading addresses this by applying scheduled, reversible operations to checkpoint tensors as they are loaded. Transformers makes this available through [`WeightConverter`], which maps one or more source keys to target keys by running a list of composable conversion operations. This approach adapts to new weight layouts, and supports loading quantized mixture-of-experts (MoEs) or enabling tensor parallelism and MoEs.
 
 This guide demonstrates how to use the [`WeightConverter`] to convert tensors. Your [`WeightConverter`] should be added inside [_build_checkpoint_conversion_mapping()](https://github.com/huggingface/transformers/blob/4c9fde2a2a3aece0bcf1be93f696e88297da9397/src/transformers/conversion_mapping.py#L34) in the [conversion_mapping.py](https://github.com/huggingface/transformers/blob/main/src/transformers/conversion_mapping.py) file.
+
+## Full loading pipeline
+
+All models go through the dynamic weight loading system. Conversion mapping is an **optional step within that system** that only activates when the model has entries in `_MODEL_TO_CONVERSION_PATTERN`.
+
+```
+Checkpoint File → from_pretrained() → convert_and_load_state_dict_in_model()
+                                              ↓
+                         ┌──────────────────────────────────────┐
+                         │  For each weight in checkpoint:      │
+                         │  1. Match key to model parameter     │
+                         │  2. Apply conversion (if defined)    │
+                         │  3. Apply TP sharding (if tp_plan)   │
+                         │  4. Apply quantization (if enabled)  │
+                         │  5. Set parameter on model           │
+                         └──────────────────────────────────────┘
+```
+
+| Step | When it activates |
+|------|-------------------|
+| Dynamic loading | Always, for all models |
+| Conversion mapping | Only when `model_type` is in `_MODEL_TO_CONVERSION_PATTERN` |
+| TP sharding | Only when `tp_plan="auto"` and model has `base_model_tp_plan` |
+| Quantization | Only when a quantization config is provided |
+
+### Dense models (e.g., Llama)
+
+For dense models, the checkpoint format matches the model format directly, so no conversion mapping is needed. TP sharding still applies.
+
+```
+Checkpoint:                    Model:
+q_proj.weight        →        q_proj.weight
+k_proj.weight        →        k_proj.weight
+v_proj.weight        →        v_proj.weight
+gate_proj.weight     →        gate_proj.weight
+up_proj.weight       →        up_proj.weight
+```
+
+### MoE models (e.g., Mixtral)
+
+For MoE models, the checkpoint format differs from the model format. Conversion mapping transforms separate expert weights into fused 3D tensors, and TP sharding applies after conversion.
+
+```
+Checkpoint:                              Model:
+experts.0.w1.weight  ─┐
+experts.1.w1.weight   │ MergeModulelist
+...                   ├───────────────→  experts.gate_up_proj (8, hidden, 2*intermediate)
+experts.0.w3.weight   │ + Concatenate
+experts.1.w3.weight  ─┘
+```
+
+## Architecture
+
+The system is built around several key components defined in `src/transformers/core_model_loading.py`:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     convert_and_load_state_dict_in_model        │
+│                                                                 │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
+│  │ WeightRenaming│    │WeightConverter│    │ ConversionOps   │  │
+│  │              │    │              │    │                  │  │
+│  │ Simple key   │    │ Multi-step   │    │ - Chunk          │  │
+│  │ renaming     │    │ transforms   │    │ - Concatenate    │  │
+│  │              │    │              │    │ - MergeModulelist│  │
+│  └──────────────┘    └──────────────┘    │ - Transpose      │  │
+│                                          │ - etc.           │  │
+│                                          └──────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                  ThreadPoolExecutor                       │  │
+│  │           (Async tensor materialization)                  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### WeightTransform
+
+The base class that handles pattern matching and tensor collection:
+
+- **Pattern compilation**: Converts glob-style patterns (`*.weight`) to regex.
+- **Key renaming**: `rename_source_key()` transforms checkpoint keys to model keys.
+- **Tensor collection**: `add_tensor()` gathers related tensors for batch processing.
+- **Reversibility**: `reverse_transform()` creates the inverse operation for saving.
+
+```python
+@dataclass(slots=True)
+class WeightTransform:
+    source_patterns: str | list[str]      # Checkpoint key patterns
+    target_patterns: str | list[str]      # Model key patterns
+    compiled_sources: re.Pattern          # Compiled regex for matching
+    distributed_operation: TensorParallelLayer | None
+    quantization_operation: ConversionOps | None
+    collected_tensors: dict[str, list[Future]]  # Gathered tensors
+    layer_targets: dict[str, set[str]]          # Target key tracking
+```
+
+### WeightRenaming
+
+[`WeightRenaming`] is a specialized [`WeightTransform`] for simple 1:1 key renaming without tensor operations:
+
+```py
+# Legacy checkpoint compatibility
+WeightRenaming("LayerNorm.gamma", "LayerNorm.weight")
+
+# Module path changes
+WeightRenaming(".block_sparse_moe.", ".mlp.")
+
+# Adding prefixes
+WeightRenaming("(.+)", "timm_model.\\1")
+```
+
+### WeightConverter
+
+[`WeightConverter`] extends [`WeightTransform`] with a list of [`ConversionOps`]:
+
+```python
+@dataclass(slots=True)
+class WeightConverter(WeightTransform):
+    operations: list[ConversionOps]  # Chain of operations
+```
+
+It supports many-to-one (e.g., concatenating `gate` + `up` → `gate_up`), one-to-many (e.g., splitting `qkv` → `q`, `k`, `v`), and chained operations applied sequentially.
 
 ## Conversion operations
 
@@ -28,9 +156,18 @@ The [`WeightConverter`] class has several operations that are executed when [`~P
 
 Operations are fully reversible. Saving reverses the conversions and returns the original checkpoint so you can easily work across different frameworks.
 
+| Operation | Reverse |
+|-----------|---------|
+| [`Chunk(dim)`] | [`Concatenate(dim)`] |
+| [`Concatenate(dim)`] | [`Chunk(dim)`] |
+| [`MergeModulelist(dim)`] | [`SplitModulelist(dim)`] |
+| [`SplitModulelist(dim)`] | [`MergeModulelist(dim)`] |
+| [`Transpose(d0, d1)`] | [`Transpose(d1, d0)`] |
+| [`Force16BytesAlignment`] | [`Force16BytesAlignment`] (idempotent) |
+
 ### Chunk
 
-The [`Chunk`] operation is used to split a tensor. For example, if a model expects Q, K, and V as three separate tensors instead of a single tensor.
+The [`Chunk`] operation splits a tensor into equal parts along a dimension. For example, if a model expects Q, K, and V as three separate tensors instead of a single tensor.
 
 ```py
 WeightConverter(
@@ -42,7 +179,7 @@ WeightConverter(
 
 ### Concatenate
 
-The [`Concatenate`] operation allows you to fuse separate tensors into a single tensor. For example, if a model expects Q, K, and V as a single tensor instead of separate tensors.
+The [`Concatenate`] operation fuses separate tensors into a single tensor. For example, if a model expects Q, K, and V as a single tensor instead of separate tensors.
 
 ```py
 WeightConverter(
@@ -54,7 +191,7 @@ WeightConverter(
 
 ### MergeModulelist
 
-[`MergeModulelist`] merges a list of tensors into a single tensor. For example, you can compose [`MergeModulelist`] with [`Concatenate`] to stack the experts in a MoE and pack them into one tensor.
+[`MergeModulelist`] merges a list of 2D tensors into a single 3D tensor. For example, you can compose [`MergeModulelist`] with [`Concatenate`] to stack the experts in a MoE and pack them into one tensor.
 
 ```py
 WeightConverter(
@@ -69,7 +206,7 @@ WeightConverter(
 
 ### SplitModulelist
 
-[`SplitModulelist`] splits a tensor back into a list of tensors. For example, you can split a stack of experts back into individual experts.
+[`SplitModulelist`] splits a 3D tensor back into a list of 2D tensors. For example, you can split a stack of experts back into individual experts.
 
 ```py
 WeightConverter(
@@ -94,6 +231,160 @@ WeightConverter(
 )
 ```
 
+### Transpose
+
+[`Transpose`] swaps dimensions of a tensor. Useful for converting weight layouts between different conventions.
+
+```py
+WeightConverter(
+    source_patterns="mlp.gate.weight",
+    target_patterns="mlp.text_moe.gate.weight",
+    operations=[Transpose(dim0=0, dim1=1)],
+)
+```
+
+### Force16BytesAlignment
+
+[`Force16BytesAlignment`] clones a tensor if it is not 16-byte aligned. This is required for `torch._grouped_mm` and TMA/SIMD operations. It is idempotent: applying it more than once has no additional effect.
+
+## Operation chaining
+
+Operations can be chained to perform complex transformations. The operations execute in order, with each operation's output becoming the next operation's input.
+
+### Example: Mixtral MoE conversion
+
+```python
+WeightConverter(
+    source_patterns=[
+        ".experts.*.w1.weight",  # gate_proj per expert
+        ".experts.*.w3.weight",  # up_proj per expert
+    ],
+    target_patterns=".experts.gate_up_proj",
+    operations=[
+        MergeModulelist(dim=0),  # Stack all experts: (n_experts, in, out)
+        Concatenate(dim=1),      # Fuse gate+up: (n_experts, in, 2*out)
+    ],
+)
+```
+
+**Data flow:**
+```
+Input:
+  ".experts.*.w1.weight": [tensor_0, tensor_1, ..., tensor_7]  # 8 experts
+  ".experts.*.w3.weight": [tensor_0, tensor_1, ..., tensor_7]  # 8 experts
+
+After MergeModulelist(dim=0):
+  ".experts.*.w1.weight": (8, 4096, 14336)  # stacked gate
+  ".experts.*.w3.weight": (8, 4096, 14336)  # stacked up
+
+After Concatenate(dim=1):
+  ".experts.gate_up_proj": (8, 4096, 28672)  # fused gate_up
+```
+
+### Pattern matching
+
+The `*` in patterns acts as a wildcard:
+- During loading, it matches any numeric index (`experts.0.`, `experts.1.`, etc.).
+- Tensors with the same pattern (differing only in index) are grouped together.
+- The order of collection is preserved for correct concatenation.
+
+## Tensor parallelism integration
+
+The dynamic loading system integrates with tensor parallelism (TP) through the `TensorParallelLayer` hierarchy defined in `src/transformers/integrations/tensor_parallel.py`.
+
+When TP is enabled, tensors are sharded **during** materialization, not after. This means each rank only loads the portion of the tensor it needs.
+
+```python
+def spawn_tp_materialize(thread_pool, tensor, sharding_method, tensor_idx, device, dtype):
+    def _job():
+        return sharding_method.shard_tensor(tensor, tensor_idx=tensor_idx, device=device, dtype=dtype)
+    return thread_pool.submit(_job)
+```
+
+### Available parallel styles
+
+| Style | Weight Shard Dim | Description |
+|-------|------------------|-------------|
+| `colwise` | -2 | Column-wise: output features sharded |
+| `rowwise` | -1 | Row-wise: input features sharded |
+| `packed_colwise` | -2 | For fused weights (gate_up_proj) |
+| `packed_rowwise` | -1 | For fused weights |
+| `embedding_rowwise` | 0 | Vocabulary parallelism |
+| `grouped_gemm` | 0 | Expert parallelism for MoE |
+| `sequence_parallel` | None | No weight sharding |
+
+### Packed weight handling
+
+For fused weights like `gate_up_proj`, special care is needed to shard correctly:
+
+```python
+def get_packed_weights(param, empty_param, device_mesh, rank, dim):
+    """
+    Interleaves gate and up shards correctly.
+
+    Packed tensor: [G0 G1 G2 G3 | U0 U1 U2 U3]
+
+    With TP=2:
+    - Rank 0 gets: [G0 G1 | U0 U1]
+    - Rank 1 gets: [G2 G3 | U2 U3]
+    """
+```
+
+The TP operation is stored in the [`WeightTransform`] and applied after conversion operations:
+
+```python
+if matched_tp_pattern := tp_plan_alt.search(renamed_key):
+    tp_layer = ALL_PARALLEL_STYLES[model.tp_plan[matched_tp_pattern]]
+    mapping.distributed_operation = tp_layer(
+        device_mesh=device_mesh,
+        rank=device_mesh.get_local_rank(),
+        empty_param=empty_param.clone()
+    )
+```
+
+## Quantization integration
+
+Quantization is integrated through the `HfQuantizer` class in `src/transformers/quantizers/base.py`. Quantizers can provide:
+
+1. **Quantization operations** for on-the-fly quantization during load.
+2. **Weight conversions** for deserializing pre-quantized checkpoints.
+
+### Pre-quantized loading
+
+For pre-quantized models, the quantizer provides [`WeightConverter`] instances:
+
+```python
+def get_weight_conversions(self):
+    """Returns list of WeightConverter for deserializing quantized weights."""
+    return []  # Override in subclass
+```
+
+Example for TorchAO:
+```python
+WeightConverter(
+    source_patterns=[":qdata", ":scale"],
+    target_patterns="",
+    operations=[TorchaoDeserialize()],
+)
+```
+
+### On-the-fly quantization
+
+For non-pre-quantized models, the quantizer provides a quantization operation that is applied after other conversions:
+
+```python
+if hf_quantizer is not None and mapping.quantization_operation is not None:
+    collected_tensors = mapping.quantization_operation.convert(
+        collected_tensors,
+        source_patterns=...,
+        target_patterns=...,
+        model=model,
+        config=config,
+    )
+```
+
+The system preserves checkpoint dtypes for pre-quantized weights to avoid unwanted dtype casts during deserialization.
+
 ## Fast and efficient model loading
 
 Loading a model is faster and uses less memory because the loader knows which tensors are required for operations and schedules their materialization lazily.
@@ -104,6 +395,43 @@ If your system runs other heavy processes, multiple threads may slow down loadin
 
 > [!NOTE]
 > The default is 4 threads for asynchronous parameter loading. This provides the best trade-off across loading scenarios and hardware. The work is mostly I/O bound, but depending on accelerator hardware and the `dtype` required at loading, it can become CPU/GPU-bound if the `dtype` differs from the serialized one (this requires an additional copy operation).
+
+### Async vs sync loading
+
+```python
+def spawn_materialize(thread_pool, tensor, device, dtype) -> Future | Callable:
+    def _job():
+        return _materialize_copy(tensor, device, dtype)
+
+    if thread_pool is not None:
+        return thread_pool.submit(_job)  # Async: returns Future
+    else:
+        return _job  # Sync: returns Callable (deferred execution)
+```
+
+Sync loading is used when:
+- `HF_DEACTIVATE_ASYNC_LOAD=1` environment variable is set.
+- Disk offloading is enabled (memory constraints require sequential loading).
+
+### Materialization flow
+
+```
+1. Checkpoint iteration:
+   - For each key, submit materialization job
+   - Job returns Future (async) or Callable (sync)
+   - Add to WeightConverter.collected_tensors
+
+2. Conversion phase:
+   - materialize_tensors() waits for all Futures
+   - Applies conversion operations
+   - Sets parameters on model
+
+3. Cleanup:
+   - Delete realized tensors immediately
+   - Thread pool shutdown (with cancel_futures=True for interrupts)
+```
+
+### Memory efficiency
 
 When converting a weight, the converter waits for all required tensors to materialize if they haven't loaded yet. For example, the [`MergeModulelist`] operation requires all weights in `ModuleList` to be loaded before merging.
 
@@ -117,6 +445,146 @@ This worst case only occurs when all other parameters have loaded before the dem
 For example, a MoE model using [`MergeModulelist`] for experts on each layer, the theoretical worst-case memory peak is model size plus experts on one layer.
 
 These worst-case scenarios are uncommon. The actual memory peak tends to stay close to the model size.
+
+## Reversibility
+
+The system supports saving models with the inverse transformations, enabling round-trip save/load:
+
+```python
+def revert_weight_conversion(model, state_dict):
+    """Applies reverse conversions for saving."""
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    # Reverse all transforms
+    reverse_weight_conversion = [
+        conversion.reverse_transform() for conversion in weight_conversions
+    ]
+
+    # Apply in reverse
+    for first_param_name, reversed_converter in conversion_mapping.items():
+        realized_value = reversed_converter.convert(first_param_name, model=model)
+```
+
+Target patterns may contain regex elements that need processing for the reverse direction:
+
+```python
+def process_target_pattern(pattern: str) -> tuple[str, str | None]:
+    """
+    - Removes `^` and `$` anchors
+    - Removes negative lookahead/lookbehind
+    - Detects capturing groups, replaces with \1
+    """
+```
+
+## Real examples
+
+### Mixtral-style MoE
+
+**Checkpoint format:**
+```
+model.layers.0.block_sparse_moe.experts.0.w1.weight  # gate per expert
+model.layers.0.block_sparse_moe.experts.0.w2.weight  # down per expert
+model.layers.0.block_sparse_moe.experts.0.w3.weight  # up per expert
+...
+model.layers.0.block_sparse_moe.experts.7.w1.weight
+```
+
+**Model format:**
+```
+model.layers.0.mlp.experts.gate_up_proj  # (8, 4096, 28672)
+model.layers.0.mlp.experts.down_proj     # (8, 14336, 4096)
+```
+
+**Conversion mapping** (from `conversion_mapping.py`):
+```python
+"mixtral": [
+    WeightRenaming(".block_sparse_moe.", ".mlp."),
+    WeightConverter(
+        source_patterns=[".experts.*.w1.weight", ".experts.*.w3.weight"],
+        target_patterns=".experts.gate_up_proj",
+        operations=[MergeModulelist(dim=0), Concatenate(dim=1)],
+    ),
+    WeightConverter(
+        source_patterns=[".experts.*.w2.weight"],
+        target_patterns=".experts.down_proj",
+        operations=[MergeModulelist(dim=0)],
+    ),
+],
+```
+
+### Qwen2-style MoE
+
+**Checkpoint format:**
+```
+model.layers.0.mlp.experts.0.gate_proj.weight
+model.layers.0.mlp.experts.0.up_proj.weight
+model.layers.0.mlp.experts.0.down_proj.weight
+...
+```
+
+**Conversion mapping:**
+```python
+"qwen2_moe": [
+    WeightConverter(
+        source_patterns=[
+            "mlp.experts.*.gate_proj.weight",
+            "mlp.experts.*.up_proj.weight",
+        ],
+        target_patterns="mlp.experts.gate_up_proj",
+        operations=[MergeModulelist(dim=0), Concatenate(dim=1)],
+    ),
+    WeightConverter(
+        source_patterns="mlp.experts.*.down_proj.weight",
+        target_patterns="mlp.experts.down_proj",
+        operations=[MergeModulelist(dim=0)],
+    ),
+],
+```
+
+### ERNIE 4.5 VL MoE
+
+This model has text and vision experts that need special handling:
+
+```python
+"ernie4_5_vl_moe": [
+    # Vision model renaming
+    WeightRenaming("vision_model", "vision_tower"),
+
+    # Gate weight transposition
+    WeightConverter(
+        source_patterns="mlp.gate.weight",
+        target_patterns="mlp.text_moe.gate.weight",
+        operations=[Transpose(dim0=0, dim1=1)],
+    ),
+
+    # Split experts between text and vision
+    WeightConverter(
+        source_patterns=["experts.*.down_proj.weight"],
+        target_patterns=[
+            "text_moe.experts.down_proj",
+            "vision_moe.experts.down_proj",
+        ],
+        operations=[ErnieFuseAndSplitTextVisionExperts(stack_dim=0, concat_dim=1)],
+    ),
+],
+```
+
+### Model type aliases
+
+Many models share conversion patterns:
+
+```python
+_MODEL_TO_CONVERSION_PATTERN = {
+    "mixtral": "mixtral",
+    "minimax": "mixtral",
+    "qwen2_moe": "qwen2_moe",
+    "deepseek_v2": "qwen2_moe",
+    "deepseek_v3": "qwen2_moe",
+    "qwen3_moe": "qwen2_moe",
+    "olmoe": "qwen2_moe",
+    ...
+}
+```
 
 ## Reusing the dynamic loading building blocks
 
@@ -141,4 +609,13 @@ At a high level, the contract looks like this:
    - `_finalize_load_state_dict(...)` to move any missing/mismatched tensors off `meta`, initialize them, and tie weights.
    - `log_state_dict_report(...)` to report missing/unexpected/mismatched keys (and conversion errors).
 
-These APIs are expose to allow you to handle custom code, custom weight format, but also make sure you benefit from the highest and most efficient weight loading, sharding and good quality of life of `transformers` API!
+These APIs are exposed to allow you to handle custom code, custom weight formats, but also make sure you benefit from the highest and most efficient weight loading, sharding and good quality of life of `transformers` API!
+
+## Key files reference
+
+| File | Purpose |
+|------|---------|
+| `src/transformers/core_model_loading.py` | Core loading logic, WeightConverter, ConversionOps |
+| `src/transformers/conversion_mapping.py` | Built-in conversion patterns for all models |
+| `src/transformers/integrations/tensor_parallel.py` | TP sharding classes and utilities |
+| `src/transformers/quantizers/base.py` | Quantization hooks and base class |
