@@ -774,9 +774,9 @@ class MlaKvAProjParallel(TensorParallelLayer):
     def shard_tensor(self, param, tensor_idx=None, device=None, dtype=None):
         return param[...].to(device=device, dtype=dtype)
 
-    def prepare_module_tp(self, module, device_mesh, model=None, **kwargs):
-        if model is not None and hasattr(model.config, "qk_rope_head_dim"):
-            module._rope_dim = model.config.qk_rope_head_dim
+    def prepare_module_tp(self, module, device_mesh, config=None, **kwargs):
+        if config is not None and hasattr(config, "qk_rope_head_dim"):
+            module._rope_dim = config.qk_rope_head_dim
         distribute_module(module, device_mesh, output_fn=self._prepare_output_fn)
 
 
@@ -1342,7 +1342,7 @@ def add_tensor_parallel_hooks_to_module(
     if current_module_plan is not None:
         tp_layer = ALL_PARALLEL_STYLES[current_module_plan]
         try:
-            tp_layer.prepare_module_tp(module, device_mesh, model=model)
+            tp_layer.prepare_module_tp(module, device_mesh, config=model.config)
         except NotImplementedError as e:
             print(
                 f"Trying to prepare {layer_name}, but it's not supported. Corresponding module: {module} Fix it's TP plan: {e}"
