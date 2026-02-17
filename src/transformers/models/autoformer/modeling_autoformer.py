@@ -861,7 +861,7 @@ class AutoformerEncoder(AutoformerPreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    ) -> tuple | BaseModelOutput:
         r"""
         Args:
             attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -958,7 +958,7 @@ class AutoformerDecoder(AutoformerPreTrainedModel):
         use_cache: bool | None = None,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> AutoFormerDecoderOutput:
+    ) -> tuple | AutoFormerDecoderOutput:
         r"""
         Args:
             trend (`torch.FloatTensor` of shape `(batch_size, prediction_length, feature_size)`, *optional*):

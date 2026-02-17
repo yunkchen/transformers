@@ -1236,7 +1236,7 @@ class ClvpForCausalLM(ClvpPreTrainedModel, GenerationMixin):
         use_cache: bool | None = None,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> CausalLMOutputWithCrossAttentions:
+    ) -> tuple | CausalLMOutputWithCrossAttentions:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
@@ -1501,7 +1501,7 @@ class ClvpModelForConditionalGeneration(ClvpPreTrainedModel, GenerationMixin):
         return_loss: bool | None = None,
         cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> ClvpOutput:
+    ) -> tuple | ClvpOutput:
         r"""
         conditioning_encoder_inputs_embeds (`torch.FloatTensor`, *optional*):
             inputs_embeds for `ClvpConditioningEncoder`. Can be used in place of `input_ids`.

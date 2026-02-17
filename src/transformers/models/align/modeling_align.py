@@ -969,7 +969,7 @@ class AlignVisionModel(AlignPreTrainedModel):
         self,
         pixel_values: torch.FloatTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPoolingAndNoAttention:
+    ) -> tuple | BaseModelOutputWithPoolingAndNoAttention:
         r"""
         Examples:
 
@@ -1119,7 +1119,7 @@ class AlignModel(AlignPreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         return_loss: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> AlignOutput:
+    ) -> tuple | AlignOutput:
         r"""
         return_loss (`bool`, *optional*):
             Whether or not to return the contrastive loss.

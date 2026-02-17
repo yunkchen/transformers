@@ -313,7 +313,7 @@ class PaliGemmaModel(PaliGemmaPreTrainedModel):
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> PaligemmaModelOutputWithPast:
+    ) -> tuple | PaligemmaModelOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,

@@ -487,7 +487,7 @@ class OPTForCausalLM(OPTPreTrainedModel, GenerationMixin):
         cache_position: torch.Tensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> CausalLMOutputWithPast:
+    ) -> tuple | CausalLMOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -576,7 +576,7 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
         use_cache: bool | None = None,
         position_ids: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> SequenceClassifierOutputWithPast:
+    ) -> tuple | SequenceClassifierOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
@@ -679,7 +679,7 @@ class OPTForQuestionAnswering(OPTPreTrainedModel):
         use_cache: bool | None = None,
         position_ids: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> QuestionAnsweringModelOutput:
+    ) -> tuple | QuestionAnsweringModelOutput:
         r"""
         Example:
 

@@ -609,7 +609,7 @@ class Owlv2Encoder(nn.Module):
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    ) -> tuple | BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`).
@@ -656,7 +656,7 @@ class Owlv2TextTransformer(Owlv2PreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size * num_max_text_queries, sequence_length)`):
             Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
@@ -683,7 +683,7 @@ class Owlv2TextTransformer(Owlv2PreTrainedModel):
             **kwargs,
         )
 
-        last_hidden_state = encoder_outputs[0]
+        last_hidden_state = encoder_outputs.last_hidden_state
         last_hidden_state = self.final_layer_norm(last_hidden_state)
 
         # take features from the end of tokens embedding (end of token is the highest number in each sequence)
@@ -742,6 +742,8 @@ class Owlv2TextModel(Owlv2PreTrainedModel):
         >>> last_hidden_state = outputs.last_hidden_state
         >>> pooled_output = outputs.pooler_output  # pooled (EOS token) states
         ```"""
+
+        # Get embeddings for all text queries in all batch samples
         return self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -770,7 +772,7 @@ class Owlv2VisionTransformer(Owlv2PreTrainedModel):
         pixel_values: torch.FloatTensor,
         interpolate_pos_encoding: bool | None = False,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         # Cast the input to the expected `dtype`
         expected_input_dtype = self.embeddings.patch_embedding.weight.dtype
         pixel_values = pixel_values.to(expected_input_dtype)
@@ -783,7 +785,7 @@ class Owlv2VisionTransformer(Owlv2PreTrainedModel):
             **kwargs,
         )
 
-        last_hidden_state = encoder_outputs[0]
+        last_hidden_state = encoder_outputs.last_hidden_state
         pooled_output = last_hidden_state[:, 0, :]
 
         pooled_output = self.post_layernorm(pooled_output)
@@ -815,7 +817,7 @@ class Owlv2VisionModel(Owlv2PreTrainedModel):
         pixel_values: torch.FloatTensor | None = None,
         interpolate_pos_encoding: bool = False,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple | BaseModelOutputWithPooling:
+    ) -> BaseModelOutputWithPooling:
         r"""
         Examples:
         ```python
@@ -965,7 +967,7 @@ class Owlv2Model(Owlv2PreTrainedModel):
         interpolate_pos_encoding: bool = False,
         return_base_image_embeds: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> Owlv2Output:
+    ) -> tuple | Owlv2Output:
         r"""
         return_loss (`bool`, *optional*):
             Whether or not to return the contrastive loss.
@@ -995,6 +997,7 @@ class Owlv2Model(Owlv2PreTrainedModel):
             **kwargs,
         )
 
+        # Get embeddings for all text queries in all batch samples
         text_outputs: BaseModelOutputWithPooling = self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1240,7 +1243,7 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor]:
         # Encode text and image
-        outputs: Owlv2Output = self.owlv2(
+        outputs = self.owlv2(
             pixel_values=pixel_values,
             input_ids=input_ids,
             attention_mask=attention_mask,

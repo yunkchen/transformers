@@ -647,7 +647,7 @@ class ChineseCLIPVisionEncoder(nn.Module):
         self,
         inputs_embeds,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    ) -> tuple | BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):

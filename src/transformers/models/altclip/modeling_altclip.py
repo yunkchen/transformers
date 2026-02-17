@@ -565,7 +565,7 @@ class AltCLIPEncoder(nn.Module):
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    ) -> tuple | BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
@@ -755,7 +755,7 @@ class AltCLIPVisionTransformer(nn.Module):
         pixel_values: torch.FloatTensor | None = None,
         interpolate_pos_encoding: bool | None = False,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
 
@@ -936,10 +936,6 @@ class AltRobertaModel(AltCLIPPreTrainedModel):
 class AltCLIPTextModel(AltCLIPPreTrainedModel):
     config: AltCLIPTextConfig
     input_modalities = ("text",)
-    _can_record_outputs = {
-        "hidden_states": AltRobertaLayer,
-        "attentions": AltRobertaAttention,
-    }
 
     def __init__(self, config):
         super().__init__(config)

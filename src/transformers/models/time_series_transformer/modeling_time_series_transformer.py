@@ -704,7 +704,7 @@ class TimeSeriesTransformerDecoder(TimeSeriesTransformerPreTrainedModel):
         use_cache: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPastAndCrossAttentions:
+    ) -> tuple | BaseModelOutputWithPastAndCrossAttentions:
         r"""
         Args:
             attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):

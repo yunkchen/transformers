@@ -595,7 +595,7 @@ class OwlViTEncoder(nn.Module):
         inputs_embeds,
         attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    ) -> tuple | BaseModelOutput:
         r"""
         Args:
             inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`).
@@ -641,7 +641,7 @@ class OwlViTTextTransformer(OwlViTPreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size * num_max_text_queries, sequence_length)`):
             Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
@@ -706,7 +706,7 @@ class OwlViTTextModel(OwlViTPreTrainedModel):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size * num_max_text_queries, sequence_length)`):
             Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
@@ -755,7 +755,7 @@ class OwlViTVisionTransformer(OwlViTPreTrainedModel):
         pixel_values: torch.FloatTensor,
         interpolate_pos_encoding: bool | None = False,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPooling:
+    ) -> tuple | BaseModelOutputWithPooling:
         # Cast the input to the expected `dtype`
         expected_input_dtype = self.embeddings.patch_embedding.weight.dtype
         pixel_values = pixel_values.to(expected_input_dtype)
@@ -948,7 +948,7 @@ class OwlViTModel(OwlViTPreTrainedModel):
         interpolate_pos_encoding: bool = False,
         return_base_image_embeds: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> OwlViTOutput:
+    ) -> tuple | OwlViTOutput:
         r"""
         return_loss (`bool`, *optional*):
             Whether or not to return the contrastive loss.
@@ -1201,7 +1201,7 @@ class OwlViTForObjectDetection(OwlViTPreTrainedModel):
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor]:
         # Encode text and image
-        outputs: OwlViTOutput = self.owlvit(
+        outputs = self.owlvit(
             pixel_values=pixel_values,
             input_ids=input_ids,
             attention_mask=attention_mask,

@@ -1695,7 +1695,7 @@ class ClapTextModelWithProjection(ClapPreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> ClapTextModelOutput:
+    ) -> tuple | ClapTextModelOutput:
         r"""
         Examples:
 

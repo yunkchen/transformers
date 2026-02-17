@@ -1420,7 +1420,7 @@ class xLSTMModel(xLSTMPreTrainedModel):
         cache_params: xLSTMCache | None = None,
         use_cache: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> xLSTMOutput:
+    ) -> tuple | xLSTMOutput:
         r"""
         cache_params (`xLSTMCache`, *optional*):
             The xLSTMCache that carries the RNN states.
