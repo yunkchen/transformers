@@ -36,7 +36,7 @@ from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, auto_docstring, logging
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from ...utils.import_utils import is_causal_conv1d_available, is_mamba_ssm_available
 from ...utils.output_capturing import capture_outputs
 from .configuration_zamba import ZambaConfig
@@ -983,7 +983,7 @@ class ZambaForCausalLM(ZambaPreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1112,7 +1112,7 @@ class ZambaForSequenceClassification(ZambaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,

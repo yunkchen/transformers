@@ -1459,7 +1459,7 @@ class Zamba2ForCausalLM(Zamba2PreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
