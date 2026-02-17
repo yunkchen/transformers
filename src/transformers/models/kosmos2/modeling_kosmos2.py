@@ -645,7 +645,6 @@ class KosmosTextAttention(nn.Module):
         encoder_hidden_states: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         attention_mask: torch.Tensor | None = None,
-        output_attentions: bool = False,
         cache_position: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor | None, Cache | None]:
@@ -779,7 +778,6 @@ class Kosmos2TextBlock(GradientCheckpointingLayer):
         encoder_attention_mask: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         output_attentions: bool | None = False,
-        use_cache: bool | None = True,
         cache_position: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
@@ -1170,7 +1168,7 @@ class Kosmos2TextModel(Kosmos2PreTrainedModel):
     def get_input_embeddings(self) -> nn.Module:
         return self.model.embed_tokens
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1242,7 +1240,7 @@ class Kosmos2TextForCausalLM(Kosmos2PreTrainedModel, GenerationMixin):
     def get_output_embeddings(self) -> nn.Module:
         return self.lm_head
 
-    @capture_outputs
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1409,6 +1407,10 @@ class Kosmos2ImageToTextProjection(nn.Module):
 class Kosmos2Model(Kosmos2PreTrainedModel):
     config: Kosmos2Config
     main_input_name = "pixel_values"
+    _can_record_outputs = {
+        "hidden_states": Kosmos2TextBlock,
+        "attentions": KosmosTextAttention,
+    }
 
     def __init__(self, config: Kosmos2Config):
         super().__init__(config)
@@ -1458,7 +1460,7 @@ class Kosmos2Model(Kosmos2PreTrainedModel):
 
         return vision_output
 
-    @can_return_tuple
+    @capture_outputs
     @merge_with_config_defaults
     @auto_docstring
     def forward(
@@ -1528,6 +1530,7 @@ class Kosmos2Model(Kosmos2PreTrainedModel):
             image_embeds = image_features.pooler_output
             projection_attentions = image_features.projection_attentions
 
+
         outputs = self.text_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1562,6 +1565,10 @@ class Kosmos2ForConditionalGeneration(Kosmos2PreTrainedModel, GenerationMixin):
     config: Kosmos2Config
     main_input_name = "pixel_values"
     _tied_weights_keys = {"text_model.lm_head.weight": "text_model.model.embed_tokens.weight"}
+    _can_record_outputs = {
+        "hidden_states": Kosmos2TextBlock,
+        "attentions": KosmosTextAttention,
+    }
 
     def __init__(self, config: Kosmos2Config):
         super().__init__(config)
@@ -1586,7 +1593,7 @@ class Kosmos2ForConditionalGeneration(Kosmos2PreTrainedModel, GenerationMixin):
     def set_output_embeddings(self, new_embeddings):
         self.text_model.set_output_embeddings(new_embeddings)
 
-    @can_return_tuple
+    @capture_outputs
     @merge_with_config_defaults
     @auto_docstring
     def forward(
@@ -1666,8 +1673,7 @@ class Kosmos2ForConditionalGeneration(Kosmos2PreTrainedModel, GenerationMixin):
 
             vision_model_output = self.vision_model(
                 pixel_values=pixel_values,
-                output_attentions=kwargs.get("output_attentions"),
-                output_hidden_states=kwargs.get("output_hidden_states"),
+                **kwargs,
             )
             # The whole `last_hidden_state` through `post_layernorm` instead of just `pooled_output`.
             image_embeds = self.vision_model.model.post_layernorm(vision_model_output[0])
