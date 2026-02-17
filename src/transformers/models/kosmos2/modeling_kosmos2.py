@@ -1673,7 +1673,6 @@ class Kosmos2ForConditionalGeneration(Kosmos2PreTrainedModel, GenerationMixin):
 
             vision_model_output = self.vision_model(
                 pixel_values=pixel_values,
-                **kwargs,
             )
             # The whole `last_hidden_state` through `post_layernorm` instead of just `pooled_output`.
             image_embeds = self.vision_model.model.post_layernorm(vision_model_output[0])
