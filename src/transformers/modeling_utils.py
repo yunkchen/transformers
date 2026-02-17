@@ -74,6 +74,7 @@ from .integrations.hub_kernels import is_kernel
 from .integrations.peft import maybe_load_adapters
 from .integrations.sdpa_attention import sdpa_attention_forward
 from .integrations.sdpa_paged import sdpa_attention_paged_forward
+from .integrations.fsdp import distribute_fsdp_model
 from .integrations.tensor_parallel import (
     ALL_PARALLEL_STYLES,
     _get_parameter_tp_plan,
@@ -3872,6 +3873,8 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         gguf_file = kwargs.pop("gguf_file", None)
         tp_plan = kwargs.pop("tp_plan", None)
         tp_size = kwargs.pop("tp_size", None)
+        fsdp_plan = kwargs.pop("fsdp_plan", None)
+        fsdp_device_mesh = kwargs.pop("fsdp_device_mesh", None)
         distributed_config: DistributedConfig = kwargs.pop("distributed_config", None)
         device_mesh = kwargs.pop("device_mesh", None)
         trust_remote_code = kwargs.pop("trust_remote_code", None)
@@ -4073,6 +4076,12 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         loading_info = cls._finalize_model_loading(model, load_config, loading_info)
         model.eval()  # Set model in evaluation mode to deactivate Dropout modules by default
         model.set_use_kernels(use_kernels, kernel_config)
+
+        # Apply FSDP2 if configured (must be after weight loading)
+        if fsdp_plan is not None:
+            fsdp_mesh = fsdp_device_mesh if fsdp_device_mesh is not None else device_mesh
+            if fsdp_mesh is not None:
+                model = distribute_fsdp_model(model, fsdp_plan, fsdp_mesh)
 
         # If it is a model with generation capabilities, attempt to load generation files (generation config,
         # custom generate function)
