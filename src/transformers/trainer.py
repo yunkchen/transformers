@@ -1416,16 +1416,7 @@ class Trainer:
                 ignore_keys_for_eval=ignore_keys_for_eval,
             )
 
-    def _inner_training_loop(
-        self,
-        batch_size: int | None = None,
-        args: TrainingArguments | None = None,
-        resume_from_checkpoint: str | None = None,
-        trial: "optuna.Trial | dict[str, Any] | None" = None,
-        ignore_keys_for_eval: list[str] | None = None,
-    ) -> TrainOutput:
-        """Run the actual training loop: forward, backward, optimizer step, logging, and checkpointing."""
-        self.accelerator.free_memory()
+    def _init_train_batch_size(self, batch_size):
         self._train_batch_size = batch_size
         if self.args.auto_find_batch_size:
             if self.state.train_batch_size != self._train_batch_size:
@@ -1441,6 +1432,18 @@ class Trainer:
                     self.args.per_device_train_batch_size = original_bs
             self.state.train_batch_size = self._train_batch_size
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
+
+    def _inner_training_loop(
+        self,
+        batch_size: int | None = None,
+        args: TrainingArguments | None = None,
+        resume_from_checkpoint: str | None = None,
+        trial: "optuna.Trial | dict[str, Any] | None" = None,
+        ignore_keys_for_eval: list[str] | None = None,
+    ) -> TrainOutput:
+        """Run the actual training loop: forward, backward, optimizer step, logging, and checkpointing."""
+        self.accelerator.free_memory()
+        self._init_train_batch_size(batch_size)
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
         if self.is_fsdp_xla_v2_enabled:
@@ -1450,8 +1453,6 @@ class Trainer:
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
-        total_train_batch_size = self.get_total_train_batch_size(args)
-
         (
             num_train_epochs,
             num_update_steps_per_epoch,
@@ -1460,9 +1461,11 @@ class Trainer:
             epoch_based,
             len_dataloader,
             max_steps,
-        ) = self.set_initial_training_values(args, train_dataloader, total_train_batch_size)
+            total_train_batch_size,
+        ) = self.set_initial_training_values(args, train_dataloader)
 
-        model, train_dataloader = self._setup_training(args, max_steps, resume_from_checkpoint, train_dataloader)
+        self._setup_debug_model()
+        model, train_dataloader = self._setup_training(args, max_steps, resume_from_checkpoint, train_dataloader, trial)
 
         epochs_trained, steps_trained_in_current_epoch, start_time = self._init_loop_state(
             args=args,
@@ -1472,12 +1475,13 @@ class Trainer:
             max_steps=max_steps,
             total_train_batch_size=total_train_batch_size,
             num_examples=num_examples,
-            len_dataloader=len_dataloader,
             train_dataloader=train_dataloader,
             resume_from_checkpoint=resume_from_checkpoint,
             trial=trial,
-            ignore_keys_for_eval=ignore_keys_for_eval,
         )
+
+        if args.eval_on_start:
+            self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
 
         for epoch in range(epochs_trained, num_train_epochs):
             self._run_epoch(
@@ -1496,10 +1500,9 @@ class Trainer:
             if self.control.should_training_stop:
                 break
 
-        return self._finalize_training(model, trial, num_train_samples, start_time)
+        return self._finalize_training(trial, num_train_samples, start_time)
 
-    def _setup_training(self, args, max_steps, resume_from_checkpoint, train_dataloader):
-        """Create optimizer, wrap model, load checkpoint. Returns (wrapped_model, train_dataloader)."""
+    def _setup_debug_model(self):
         if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
             if self.args.n_gpu > 1:
                 # nn.DataParallel(model) replicates the model, creating new variables and module
@@ -1510,6 +1513,8 @@ class Trainer:
             else:
                 DebugUnderflowOverflow(self.model)
 
+    def _setup_training(self, args, max_steps, resume_from_checkpoint, train_dataloader, trial):
+        """Create optimizer, lr_scheduler, wrap model, load checkpoint. Returns (wrapped_model, train_dataloader)."""
         delay_optimizer_creation = is_sagemaker_mp_enabled() or self.is_fsdp_xla_enabled or self.is_fsdp_enabled
 
         # Can't delay optimizer creation when using FSDP2: https://github.com/huggingface/accelerate/blob/3f636d626063ffcf9a337c7d3624d61b7d187d59/src/accelerate/accelerator.py#L1404
@@ -1533,6 +1538,7 @@ class Trainer:
                 cb for cb in self.callback_handler.callbacks + [self.control] if isinstance(cb, ExportableState)
             ]
         )
+        self.state.is_hyper_param_search = trial is not None
         self.state.train_batch_size = self._train_batch_size
 
         # Compute absolute values for logging, eval, and save if given as ratio
@@ -1631,15 +1637,11 @@ class Trainer:
         max_steps,
         total_train_batch_size,
         num_examples,
-        len_dataloader,
         train_dataloader,
         resume_from_checkpoint,
         trial,
-        ignore_keys_for_eval,
     ):
         """Initialize training loop state. Returns (epochs_trained, steps_trained_in_current_epoch, start_time)."""
-        self.state.is_hyper_param_search = trial is not None
-
         # Train!
         logger.info("***** Running training *****")
         logger.info(f"  Num examples = {num_examples:,}")
@@ -1697,9 +1699,6 @@ class Trainer:
         self._grad_norm: float | None = None
         self._learning_rate = None
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
-
-        if args.eval_on_start:
-            self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
 
         return epochs_trained, steps_trained_in_current_epoch, start_time
 
@@ -1932,7 +1931,7 @@ class Trainer:
                     "configured. Check your training configuration if this is unexpected."
                 )
 
-    def _finalize_training(self, model, trial, num_train_samples, start_time):
+    def _finalize_training(self, trial, num_train_samples, start_time):
         """Finalize training: metrics, best-model loading, cleanup. Returns TrainOutput."""
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         if self.args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
@@ -2403,8 +2402,8 @@ class Trainer:
         return contextlib.nullcontext, inputs
 
     def set_initial_training_values(
-        self, args: TrainingArguments, dataloader: DataLoader, total_train_batch_size: int
-    ) -> tuple[int, int, int, int, bool, int | None, int]:
+        self, args: TrainingArguments, dataloader: DataLoader
+    ) -> tuple[int, int, int, int, bool, int | None, int, int]:
         """
         Calculates and returns the following values:
         - `num_train_epochs`
@@ -2414,12 +2413,14 @@ class Trainer:
         - `epoch_based`
         - `len_dataloader`
         - `max_steps`
+        - `total_train_batch_size`
         """
         # Case 1: we rely on `args.max_steps` first
         max_steps = args.max_steps
         # If max_steps is negative, we use the number of epochs to determine the number of total steps later
         epoch_based = max_steps < 0
         len_dataloader = len(dataloader) if has_length(dataloader) else None
+        total_train_batch_size = self.get_total_train_batch_size(args)
 
         # Account for Sequence Parallelism (SP) dataloader adapter's effect
         sp_size = self.get_sp_size()
@@ -2469,6 +2470,7 @@ class Trainer:
             epoch_based,
             len_dataloader,
             max_steps,
+            total_train_batch_size,
         )
 
     def get_total_train_batch_size(self, args: TrainingArguments) -> int:
