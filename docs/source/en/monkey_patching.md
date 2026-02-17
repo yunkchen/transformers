@@ -14,7 +14,7 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# Monkey patching
+# Monkey patching (experimental feature)
 
 Monkey patching allows you to replace model components globally without modifying the original model code. Once registered, patches are automatically applied when loading any model with [`~PreTrainedModel.from_pretrained`] or [`~PreTrainedModel.from_config`]. This enables you to restructure models for specific requirements like quantization compatibility, apply optimizations, or experiment with architectural variants.
 
