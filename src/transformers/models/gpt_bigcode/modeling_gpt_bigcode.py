@@ -435,9 +435,8 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
 
             [What are input IDs?](../glossary#input-ids)
         """
-        # pop recordable flags so we don't pass them twice into blocks
-        output_attentions = kwargs.pop("output_attentions", self.config.output_attentions)
-        output_hidden_states = kwargs.pop("output_hidden_states", self.config.output_hidden_states)
+        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
+        output_hidden_states = kwargs.get("output_hidden_states", self.config.output_hidden_states)
 
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -524,7 +523,6 @@ class GPTBigCodeModel(GPTBigCodePreTrainedModel):
                 attention_mask=causal_mask,
                 encoder_attention_mask=encoder_attention_mask,
                 use_cache=use_cache,
-                output_attentions=output_attentions,
                 cache_position=cache_position,
                 **kwargs,
             )

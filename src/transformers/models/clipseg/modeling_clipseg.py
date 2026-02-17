@@ -718,10 +718,7 @@ class CLIPSegVisionModel(CLIPSegPreTrainedModel):
     def forward(
         self,
         pixel_values: torch.FloatTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool | None = True,
-        return_dict: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPooling:
         r"""
@@ -748,11 +745,9 @@ class CLIPSegVisionModel(CLIPSegPreTrainedModel):
         ```"""
         return self.vision_model(
             pixel_values=pixel_values,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
             interpolate_pos_encoding=interpolate_pos_encoding,
-            return_dict=return_dict,
-            **kwargs,
+            output_attentions=kwargs.get("output_attentions", self.config.output_attentions),
+            output_hidden_states=kwargs.get("output_hidden_states", self.config.output_hidden_states),
         )
 
 
@@ -1158,6 +1153,7 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
 
         return conditional_embeddings
 
+    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -1168,11 +1164,8 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
         labels: torch.LongTensor | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
         interpolate_pos_encoding: bool = True,
-        return_dict: bool | None = None,
-        **kwargs,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | CLIPSegOutput:
         r"""
         conditional_pixel_values (`torch.FloatTensor`, *optional*):
@@ -1208,7 +1201,8 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
         >>> print(logits.shape)
         torch.Size([3, 352, 352])
         ```"""
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
+        output_hidden_states = kwargs.get("output_hidden_states", self.config.output_hidden_states)
 
         # step 1: forward the query images through the frozen CLIP vision encoder
         with torch.no_grad():
@@ -1226,17 +1220,12 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
             activations = [hidden_states[i + 1] for i in self.extract_layers]
 
             # update vision_outputs
-            if return_dict:
-                vision_outputs = BaseModelOutputWithPooling(
-                    last_hidden_state=vision_outputs.last_hidden_state,
-                    pooler_output=vision_outputs.pooler_output,
-                    hidden_states=vision_outputs.hidden_states if output_hidden_states else None,
-                    attentions=vision_outputs.attentions,
-                )
-            else:
-                vision_outputs = (
-                    vision_outputs[:2] + vision_outputs[3:] if not output_hidden_states else vision_outputs
-                )
+            vision_outputs = BaseModelOutputWithPooling(
+                last_hidden_state=vision_outputs.last_hidden_state,
+                pooler_output=vision_outputs.pooler_output,
+                hidden_states=vision_outputs.hidden_states if output_hidden_states else None,
+                attentions=vision_outputs.attentions,
+            )
 
         # step 2: compute conditional embeddings, either from text, images or an own provided embedding
         if conditional_embeddings is None:
@@ -1264,9 +1253,8 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
             conditional_embeddings,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
         )
-        logits = decoder_outputs.logits if return_dict else decoder_outputs[0]
+        logits = decoder_outputs.logits
 
         loss = None
         if labels is not None:
@@ -1274,14 +1262,6 @@ class CLIPSegForImageSegmentation(CLIPSegPreTrainedModel):
             labels = labels.to(logits.device)
             loss_fn = nn.BCEWithLogitsLoss()
             loss = loss_fn(logits, labels)
-
-        if not return_dict:
-            if isinstance(vision_outputs, ModelOutput):
-                vision_outputs = vision_outputs.to_tuple()
-            if isinstance(decoder_outputs, ModelOutput):
-                decoder_outputs = decoder_outputs.to_tuple()
-            output = (logits, conditional_embeddings, pooled_output, vision_outputs, decoder_outputs)
-            return ((loss,) + output) if loss is not None else output
 
         return CLIPSegImageSegmentationOutput(
             loss=loss,
