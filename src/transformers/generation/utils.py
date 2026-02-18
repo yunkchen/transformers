@@ -1016,6 +1016,8 @@ class GenerationMixin(ContinuousMixin):
     ) -> dict[str, Any]:
         """
         Update the model kwargs to account for the `num_new_tokens` new tokens that were just generated.
+        That is, update the `attention_mask`, `position_ids`, `cache_position` and `token_type_ids` to account for the
+        new tokens of the total sequence.
         Note that this function never slices inputs, this is performed in `prepare_inputs_for_generation`.
         """
         # update past_key_values keeping its naming used in model code
