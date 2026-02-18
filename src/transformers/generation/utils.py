@@ -616,6 +616,9 @@ class GenerationMixin(ContinuousMixin):
         attention_mask_key = "decoder_attention_mask" if self.config.is_encoder_decoder else "attention_mask"
         position_ids_key = "decoder_position_ids" if self.config.is_encoder_decoder else "position_ids"
 
+        if (position_ids := kwargs.pop(position_ids_key, None)) is not None:
+            model_inputs[position_ids_key] = position_ids
+
         # 1. Generic cache-dependent input preparation
         if past_key_values is not None:
             model_inputs["past_key_values"] = past_key_values
