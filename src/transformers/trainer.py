@@ -1358,7 +1358,6 @@ class Trainer:
 
         # This might change the seed so needs to run first.
         self._hp_search_setup(trial)
-        self._train_batch_size = self.args.train_batch_size
 
         # Model re-init
         model_reloaded = False
@@ -4363,6 +4362,7 @@ class Trainer:
             # Simply calling `_reset_state` is enough and doesn't need a version pin.
             AcceleratorState()._reset_state()
 
+        self._train_batch_size = self.args.train_batch_size
         self.create_accelerator_and_postprocess()
 
     def _report_to_hp_search(
