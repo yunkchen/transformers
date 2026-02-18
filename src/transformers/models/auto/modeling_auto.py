@@ -1395,6 +1395,7 @@ MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING_NAMES = OrderedDict(
         ("electra", "ElectraForTokenClassification"),
         ("ernie", "ErnieForTokenClassification"),
         ("esm", "EsmForTokenClassification"),
+        ("eurobert", "EuroBertForTokenClassification"),
         ("exaone4", "Exaone4ForTokenClassification"),
         ("falcon", "FalconForTokenClassification"),
         ("flaubert", "FlaubertForTokenClassification"),

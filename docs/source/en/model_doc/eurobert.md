@@ -13,6 +13,7 @@ specific language governing permissions and limitations under the License.
 rendered properly in your Markdown viewer.
 
 -->
+*This model was released on 2025-03-07 and added to Hugging Face Transformers on 2026-02-18.*
 
 # EuroBERT
 
@@ -23,16 +24,70 @@ rendered properly in your Markdown viewer.
 
 ## Overview
 
-EuroBERT is a multilingual encoder model based on a refreshed transformer architecture. It supports a mixture of European and widely spoken languages.
+[EuroBERT](https://huggingface.co/papers/2503.05500) is a multilingual encoder model based on a refreshed transformer architecture, akin to Llama but with bidirectional attention. It supports a mixture of European and widely spoken languages, with sequences of up to 8192 tokens.
 
-Check out all the available models [here](https://huggingface.co/EuroBERT).
+You can find all the original EuroBERT checkpoints under the [EuroBERT](https://huggingface.co/collections/EuroBERT/eurobert) collection, or read more about the release in the [EuroBERT blogpost](https://huggingface.co/blog/EuroBERT/release).
+
+The example below demonstrates how to predict the `<|mask|>` token with [`Pipeline`], [`AutoModel`], and from the command line.
+
+<hfoptions id="usage">
+<hfoption id="Pipeline">
+
+```py
+import torch
+from transformers import pipeline
+
+pipeline = pipeline(
+    task="fill-mask",
+    model="EuroBERT/EuroBERT-210m",
+    dtype=torch.float16,
+    device=0
+)
+pipeline("Plants create <|mask|> through a process known as photosynthesis.")
+```
+
+</hfoption>
+<hfoption id="AutoModel">
+
+```py
+import torch
+from transformers import AutoModelForMaskedLM, AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained(
+    "EuroBERT/EuroBERT-210m",
+)
+model = AutoModelForMaskedLM.from_pretrained(
+    "EuroBERT/EuroBERT-210m",
+    dtype=torch.float16,
+    device_map="auto",
+    attn_implementation="sdpa"
+)
+inputs = tokenizer("Plants create <|mask|> through a process known as photosynthesis.", return_tensors="pt").to(model.device)
+
+with torch.no_grad():
+    outputs = model(**inputs)
+    predictions = outputs.logits
+
+masked_index = torch.where(inputs['input_ids'] == tokenizer.mask_token_id)[1]
+predicted_token_id = predictions[0, masked_index].argmax(dim=-1)
+predicted_token = tokenizer.decode(predicted_token_id)
+
+print(f"The predicted token is: {predicted_token}")
+```
+
+</hfoption>
+<hfoption id="transformers CLI">
+
+```bash
+echo -e "Plants create <|mask|> through a process known as photosynthesis." | transformers run --task fill-mask --model EuroBERT/EuroBERT-210m --device 0
+```
+
+</hfoption>
+</hfoptions>
 
 ## EuroBertConfig
 
 [[autodoc]] EuroBertConfig
-
-<frameworkcontent>
-<pt>
 
 ## EuroBertModel
 
@@ -49,5 +104,7 @@ Check out all the available models [here](https://huggingface.co/EuroBERT).
 [[autodoc]] EuroBertForSequenceClassification
     - forward
 
-</pt>
-</frameworkcontent>
+## EuroBertForTokenClassification
+
+[[autodoc]] EuroBertForTokenClassification
+    - forward

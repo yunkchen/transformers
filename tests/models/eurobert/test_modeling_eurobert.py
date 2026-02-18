@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 Nicolas Boizard, Duarte M. Alves, Hippolyte Gisserot-Boukhlef and the EuroBert team. All rights reserved.
 #
 #
@@ -20,14 +19,10 @@ import unittest
 
 from parameterized import parameterized
 
-from transformers import EuroBertConfig, is_torch_available, set_seed
-from transformers.testing_utils import (
-    require_torch,
-    require_torch_accelerator,
-    torch_device,
-)
+from transformers import AutoTokenizer, EuroBertConfig, is_torch_available, set_seed
+from transformers.testing_utils import require_torch, slow, torch_device
 
-from ...generation.test_utils import GenerationTesterMixin
+from ...causal_lm_tester import _config_supports_rope_scaling, _set_config_rope_params
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, ids_tensor, random_attention_mask
 from ...test_pipeline_mixin import PipelineTesterMixin
@@ -39,12 +34,15 @@ if is_torch_available():
     from transformers import (
         EuroBertForMaskedLM,
         EuroBertForSequenceClassification,
+        EuroBertForTokenClassification,
         EuroBertModel,
     )
-    from transformers.models.eurobert.modeling_eurobert import EuroBertRotaryEmbedding
 
 
 class EuroBertModelTester:
+    if is_torch_available():
+        base_model_class = EuroBertModel
+
     def __init__(
         self,
         parent,
@@ -141,34 +139,39 @@ class EuroBertModelTester:
         model = EuroBertModel(config=config)
         model.to(torch_device)
         model.eval()
+        result = model(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids)
         result = model(input_ids, attention_mask=input_mask)
         result = model(input_ids)
         self.parent.assertEqual(result.last_hidden_state.shape, (self.batch_size, self.seq_length, self.hidden_size))
 
     def create_and_check_for_masked_lm(
-        self,
-        config,
-        input_ids,
-        input_mask,
-        sequence_labels,
-        token_labels,
-        choice_labels,
+        self, config, input_ids, token_type_ids, input_mask, sequence_labels, token_labels, choice_labels
     ):
         model = EuroBertForMaskedLM(config=config)
         model.to(torch_device)
         model.eval()
-        result = model(input_ids, attention_mask=input_mask, labels=token_labels)
+        result = model(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids, labels=token_labels)
         self.parent.assertEqual(result.logits.shape, (self.batch_size, self.seq_length, self.vocab_size))
 
     def create_and_check_for_sequence_classification(
-        self, config, input_ids, input_mask, sequence_labels, token_labels, choice_labels
+        self, config, input_ids, token_type_ids, input_mask, sequence_labels, token_labels, choice_labels
     ):
         config.num_labels = self.num_labels
         model = EuroBertForSequenceClassification(config)
         model.to(torch_device)
         model.eval()
-        result = model(input_ids, attention_mask=input_mask, labels=sequence_labels)
+        result = model(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids, labels=sequence_labels)
         self.parent.assertEqual(result.logits.shape, (self.batch_size, self.num_labels))
+
+    def create_and_check_for_token_classification(
+        self, config, input_ids, token_type_ids, input_mask, sequence_labels, token_labels, choice_labels
+    ):
+        config.num_labels = self.num_labels
+        model = EuroBertForTokenClassification(config=config)
+        model.to(torch_device)
+        model.eval()
+        result = model(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids, labels=token_labels)
+        self.parent.assertEqual(result.logits.shape, (self.batch_size, self.seq_length, self.num_labels))
 
     def prepare_config_and_inputs_for_common(self):
         config_and_inputs = self.prepare_config_and_inputs()
@@ -186,12 +189,13 @@ class EuroBertModelTester:
 
 
 @require_torch
-class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
+class EuroBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
     all_model_classes = (
         (
             EuroBertModel,
             EuroBertForMaskedLM,
             EuroBertForSequenceClassification,
+            EuroBertForTokenClassification,
         )
         if is_torch_available()
         else ()
@@ -199,13 +203,15 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
     pipeline_model_mapping = (
         {
             "feature-extraction": EuroBertModel,
-            "text-classification": EuroBertForSequenceClassification,
             "fill-mask": EuroBertForMaskedLM,
+            "text-classification": EuroBertForSequenceClassification,
+            "token-classification": EuroBertForTokenClassification,
             "zero-shot": EuroBertForSequenceClassification,
         }
         if is_torch_available()
         else {}
     )
+    model_tester_class = EuroBertModelTester
     test_headmasking = False
     test_pruning = False
     fx_compatible = False  # Broken by attention refactor cc @Cyrilvallez
@@ -274,26 +280,64 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
         result = model(input_ids, attention_mask=attention_mask, labels=sequence_labels)
         self.assertEqual(result.logits.shape, (self.model_tester.batch_size, self.model_tester.num_labels))
 
+    def test_for_masked_lm(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_for_masked_lm(*config_and_inputs)
+
+    def test_for_sequence_classification(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_for_sequence_classification(*config_and_inputs)
+
+    def test_for_token_classification(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_for_token_classification(*config_and_inputs)
+
     @unittest.skip(reason="EuroBert buffers include complex numbers, which breaks this test")
     def test_save_load_fast_init_from_base(self):
         pass
 
     @parameterized.expand([("linear",), ("dynamic",), ("yarn",)])
     def test_model_rope_scaling_from_config(self, scaling_type):
+        """
+        Tests that we can initialize a model with RoPE scaling in the config, that it can run a forward pass, and
+        that a few basic model output properties are honored.
+        """
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
+
+        if not _config_supports_rope_scaling(config):
+            self.skipTest("This model does not support RoPE scaling")
+
+        partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
         short_input = ids_tensor([1, 10], config.vocab_size)
         long_input = ids_tensor([1, int(config.max_position_embeddings * 1.5)], config.vocab_size)
 
         set_seed(42)  # Fixed seed at init time so the two models get the same random weights
-        original_model = EuroBertModel(config)
+        _set_config_rope_params(
+            config,
+            {
+                "rope_type": "default",
+                "rope_theta": 10_000.0,
+                "partial_rotary_factor": partial_rotary_factor,
+                "original_max_position_embeddings": 16384,
+            },
+        )
+        original_model = self.model_tester_class.base_model_class(config)
         original_model.to(torch_device)
         original_model.eval()
         original_short_output = original_model(short_input).last_hidden_state
         original_long_output = original_model(long_input).last_hidden_state
 
         set_seed(42)  # Fixed seed at init time so the two models get the same random weights
-        config.rope_scaling = {"type": scaling_type, "factor": 10.0}
-        scaled_model = EuroBertModel(config)
+        _set_config_rope_params(
+            config,
+            {
+                "rope_type": scaling_type,
+                "factor": 10.0,
+                "rope_theta": 10_000.0,
+                "partial_rotary_factor": partial_rotary_factor,
+            },
+        )
+        scaled_model = self.model_tester_class.base_model_class(config)
         scaled_model.to(torch_device)
         scaled_model.eval()
         scaled_short_output = scaled_model(short_input).last_hidden_state
@@ -309,21 +353,46 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
         # The output should be different for long inputs
         self.assertFalse(torch.allclose(original_long_output, scaled_long_output, atol=1e-5))
 
-    def test_model_rope_scaling(self):
+    def test_model_rope_scaling_frequencies(self):
+        """Tests the frequency properties of the different RoPE scaling types on the model RoPE layer."""
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
+
+        if not _config_supports_rope_scaling(config):
+            self.skipTest("This model does not support RoPE scaling")
+
+        # Retrieves the RoPE layer class from the base model class. Uses `.named_modules()` to avoid hardcoding the
+        # named location of the RoPE layer class.
+        base_model = self.model_tester.base_model_class(config)
+        possible_rope_attributes = [
+            "pos_emb",
+            "rotary_emb",  # most common case
+            "global_rotary_emb",
+            "local_rotary_emb",
+        ]
+        for name, module in base_model.named_modules():
+            if any(potential_name in name for potential_name in possible_rope_attributes):
+                rope_class = type(module)
+                break
+
         scaling_factor = 10
         short_input_length = 10
+        partial_rotary_factor = config.rope_parameters.get("partial_rotary_factor", 1.0)
         long_input_length = int(config.max_position_embeddings * 1.5)
 
         # Inputs
-        x = torch.randn(1, dtype=torch.float32, device=torch_device)  # used exlusively to get the dtype and the device
+        x = torch.randn(
+            1, dtype=torch.float32, device=torch_device
+        )  # used exclusively to get the dtype and the device
         position_ids_short = torch.arange(short_input_length, dtype=torch.long, device=torch_device)
         position_ids_short = position_ids_short.unsqueeze(0)
         position_ids_long = torch.arange(long_input_length, dtype=torch.long, device=torch_device)
         position_ids_long = position_ids_long.unsqueeze(0)
 
         # Sanity check original RoPE
-        original_rope = EuroBertRotaryEmbedding(config=config).to(torch_device)
+        _set_config_rope_params(
+            config, {"rope_type": "default", "rope_theta": 10_000.0, "partial_rotary_factor": partial_rotary_factor}
+        )
+        original_rope = rope_class(config=config).to(torch_device)
         original_cos_short, original_sin_short = original_rope(x, position_ids_short)
         original_cos_long, original_sin_long = original_rope(x, position_ids_long)
         torch.testing.assert_close(original_cos_short, original_cos_long[:, :short_input_length, :])
@@ -331,8 +400,16 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
 
         # Sanity check linear RoPE scaling
         # New position "x" should match original position with index "x/scaling_factor"
-        config.rope_scaling = {"type": "linear", "factor": scaling_factor}
-        linear_scaling_rope = EuroBertRotaryEmbedding(config=config).to(torch_device)
+        _set_config_rope_params(
+            config,
+            {
+                "rope_type": "linear",
+                "factor": scaling_factor,
+                "rope_theta": 10_000.0,
+                "partial_rotary_factor": partial_rotary_factor,
+            },
+        )
+        linear_scaling_rope = rope_class(config=config).to(torch_device)
         linear_cos_short, linear_sin_short = linear_scaling_rope(x, position_ids_short)
         linear_cos_long, linear_sin_long = linear_scaling_rope(x, position_ids_long)
         torch.testing.assert_close(linear_cos_short, linear_cos_long[:, :short_input_length, :])
@@ -345,8 +422,16 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
         # Sanity check Dynamic NTK RoPE scaling
         # Scaling should only be observed after a long input is fed. We can observe that the frequencies increase
         # with scaling_factor (or that `inv_freq` decreases)
-        config.rope_scaling = {"type": "dynamic", "factor": scaling_factor}
-        ntk_scaling_rope = EuroBertRotaryEmbedding(config=config).to(torch_device)
+        _set_config_rope_params(
+            config,
+            {
+                "rope_type": "dynamic",
+                "factor": scaling_factor,
+                "rope_theta": 10_000.0,
+                "partial_rotary_factor": partial_rotary_factor,
+            },
+        )
+        ntk_scaling_rope = rope_class(config=config).to(torch_device)
         ntk_cos_short, ntk_sin_short = ntk_scaling_rope(x, position_ids_short)
         ntk_cos_long, ntk_sin_long = ntk_scaling_rope(x, position_ids_long)
         torch.testing.assert_close(ntk_cos_short, original_cos_short)
@@ -359,8 +444,16 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
 
         # Sanity check Yarn RoPE scaling
         # Scaling should be over the entire input
-        config.rope_scaling = {"type": "yarn", "factor": scaling_factor}
-        yarn_scaling_rope = EuroBertRotaryEmbedding(config=config).to(torch_device)
+        _set_config_rope_params(
+            config,
+            {
+                "rope_type": "yarn",
+                "factor": scaling_factor,
+                "rope_theta": 10_000.0,
+                "partial_rotary_factor": partial_rotary_factor,
+            },
+        )
+        yarn_scaling_rope = rope_class(config=config).to(torch_device)
         yarn_cos_short, yarn_sin_short = yarn_scaling_rope(x, position_ids_short)
         yarn_cos_long, yarn_sin_long = yarn_scaling_rope(x, position_ids_long)
         torch.testing.assert_close(yarn_cos_short, yarn_cos_long[:, :short_input_length, :])
@@ -429,16 +522,70 @@ class EuroBertModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterM
             config = _reinitialize_config(base_config, {"rope_scaling": {"rope_type": "linear"}})  # missing "factor"
 
 
-@require_torch_accelerator
+@require_torch
 class EuroBertIntegrationTest(unittest.TestCase):
-    # This variable is used to determine which CUDA device are we using for our runners (A10 or T4)
-    # Depending on the hardware we get different logits / generations
-    cuda_compute_capability_major_version = None
+    @slow
+    def test_inference_masked_lm(self):
+        model = EuroBertForMaskedLM.from_pretrained("EuroBERT/EuroBERT-210m", attn_implementation="sdpa")
+        tokenizer = AutoTokenizer.from_pretrained("EuroBERT/EuroBERT-210m")
 
-    @classmethod
-    def setUpClass(cls):
-        if is_torch_available() and torch.cuda.is_available():
-            # 8 is for A100 / A10 and 7 for T4
-            cls.cuda_compute_capability_major_version = torch.cuda.get_device_capability()[0]
+        inputs = tokenizer("Hello World!", return_tensors="pt")
+        with torch.no_grad():
+            output = model(**inputs)[0]
+        expected_shape = torch.Size((1, 4, 128256))
+        self.assertEqual(output.shape, expected_shape)
 
-    # TODO: Implement integration tests
+        # compare the actual values for a slice.
+        expected_slice = torch.tensor([[[2.2926, 2.4539, 1.8910], [5.9669, 3.8567, 0.0723], [2.4965, 2.7193, 1.9904]]])
+        torch.testing.assert_close(output[:, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
+
+    @slow
+    def test_inference_no_head(self):
+        model = EuroBertModel.from_pretrained("EuroBERT/EuroBERT-210m", attn_implementation="sdpa")
+        tokenizer = AutoTokenizer.from_pretrained("EuroBERT/EuroBERT-210m")
+
+        inputs = tokenizer("Hello World!", return_tensors="pt")
+        with torch.no_grad():
+            output = model(**inputs)[0]
+        expected_shape = torch.Size((1, 4, 768))
+        self.assertEqual(output.shape, expected_shape)
+
+        # compare the actual values for a slice.
+        expected_slice = torch.tensor(
+            [[[1.2437, 1.8956, 50.9435], [-4.5560, -0.1686, -1.2776], [1.6557, 1.9383, 50.1393]]]
+        )
+        torch.testing.assert_close(output[:, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
+
+    @slow
+    def test_inference_token_classification(self):
+        model = EuroBertForTokenClassification.from_pretrained(
+            "hf-internal-testing/tiny-random-EuroBertForTokenClassification",
+            attn_implementation="sdpa",
+        )
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/tiny-random-EuroBertForTokenClassification")
+
+        inputs = tokenizer("Hello World!", return_tensors="pt")
+        with torch.no_grad():
+            output = model(**inputs)[0]
+        expected_shape = torch.Size((1, 4, 2))
+        self.assertEqual(output.shape, expected_shape)
+
+        expected = torch.tensor([[[-1.0817, -5.3000], [5.6100, -5.2878], [3.4393, -8.8765], [-0.0329, -3.8588]]])
+        torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-4)
+
+    @slow
+    def test_inference_sequence_classification(self):
+        model = EuroBertForSequenceClassification.from_pretrained(
+            "hf-internal-testing/tiny-random-EuroBertForSequenceClassification",
+            attn_implementation="sdpa",
+        )
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/tiny-random-EuroBertForSequenceClassification")
+
+        inputs = tokenizer("Hello World!", return_tensors="pt")
+        with torch.no_grad():
+            output = model(**inputs)[0]
+        expected_shape = torch.Size((1, 2))
+        self.assertEqual(output.shape, expected_shape)
+
+        expected = torch.tensor([[-1.8948, 6.2092]])
+        torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-4)
