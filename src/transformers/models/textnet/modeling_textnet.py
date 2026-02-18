@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 the Fast authors and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,26 +13,23 @@
 # limitations under the License.
 """PyTorch TextNet model."""
 
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from transformers import PreTrainedModel
-from transformers.activations import ACT2CLS
-from transformers.modeling_outputs import (
+from ...activations import ACT2CLS
+from ...backbone_utils import BackboneMixin
+from ...modeling_outputs import (
     BackboneOutput,
     BaseModelOutputWithNoAttention,
     BaseModelOutputWithPoolingAndNoAttention,
     ImageClassifierOutputWithNoAttention,
 )
-from transformers.models.textnet.configuration_textnet import TextNetConfig
-from transformers.utils import logging
-from transformers.utils.backbone_utils import BackboneMixin
-
-from ...utils import auto_docstring
+from ...modeling_utils import PreTrainedModel
+from ...utils import auto_docstring, logging
+from .configuration_textnet import TextNetConfig
 
 
 logger = logging.get_logger(__name__)
@@ -201,8 +197,8 @@ class TextNetEncoder(nn.Module):
     def forward(
         self,
         hidden_state: torch.Tensor,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
     ) -> BaseModelOutputWithNoAttention:
         hidden_states = [hidden_state]
         for stage in self.stages:
@@ -222,16 +218,6 @@ class TextNetPreTrainedModel(PreTrainedModel):
     base_model_prefix = "textnet"
     main_input_name = "pixel_values"
 
-    def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.BatchNorm2d):
-            module.weight.data.fill_(1.0)
-            if module.bias is not None:
-                module.bias.data.zero_()
-
 
 @auto_docstring
 class TextNetModel(TextNetPreTrainedModel):
@@ -244,8 +230,12 @@ class TextNetModel(TextNetPreTrainedModel):
 
     @auto_docstring
     def forward(
-        self, pixel_values: Tensor, output_hidden_states: Optional[bool] = None, return_dict: Optional[bool] = None
-    ) -> Union[tuple[Any, list[Any]], tuple[Any], BaseModelOutputWithPoolingAndNoAttention]:
+        self,
+        pixel_values: Tensor,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        **kwargs,
+    ) -> tuple[Any, list[Any]] | tuple[Any] | BaseModelOutputWithPoolingAndNoAttention:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -295,10 +285,11 @@ class TextNetForImageClassification(TextNetPreTrainedModel):
     @auto_docstring
     def forward(
         self,
-        pixel_values: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
+        pixel_values: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        **kwargs,
     ) -> ImageClassifierOutputWithNoAttention:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -309,12 +300,14 @@ class TextNetForImageClassification(TextNetPreTrainedModel):
         Examples:
         ```python
         >>> import torch
-        >>> import requests
+        >>> import httpx
+        >>> from io import BytesIO
         >>> from transformers import TextNetForImageClassification, TextNetImageProcessor
         >>> from PIL import Image
 
         >>> url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        >>> image = Image.open(requests.get(url, stream=True).raw)
+        >>> with httpx.stream("GET", url) as response:
+        ...     image = Image.open(BytesIO(response.read()))
 
         >>> processor = TextNetImageProcessor.from_pretrained("czczup/textnet-base")
         >>> model = TextNetForImageClassification.from_pretrained("czczup/textnet-base")
@@ -335,25 +328,7 @@ class TextNetForImageClassification(TextNetPreTrainedModel):
         loss = None
 
         if labels is not None:
-            if self.config.problem_type is None:
-                if self.num_labels == 1:
-                    self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-                    self.config.problem_type = "single_label_classification"
-                else:
-                    self.config.problem_type = "multi_label_classification"
-            if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
-                if self.num_labels == 1:
-                    loss = loss_fct(logits.squeeze(), labels.squeeze())
-                else:
-                    loss = loss_fct(logits, labels)
-            elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(logits, labels)
+            loss = self.loss_function(labels, logits, self.config)
 
         if not return_dict:
             output = (logits,) + outputs[2:]
@@ -367,10 +342,11 @@ class TextNetForImageClassification(TextNetPreTrainedModel):
     TextNet backbone, to be used with frameworks like DETR and MaskFormer.
     """
 )
-class TextNetBackbone(TextNetPreTrainedModel, BackboneMixin):
+class TextNetBackbone(BackboneMixin, TextNetPreTrainedModel):
+    has_attentions = False
+
     def __init__(self, config):
         super().__init__(config)
-        super()._init_backbone(config)
 
         self.textnet = TextNetModel(config)
         self.num_features = config.hidden_sizes
@@ -380,19 +356,25 @@ class TextNetBackbone(TextNetPreTrainedModel, BackboneMixin):
 
     @auto_docstring
     def forward(
-        self, pixel_values: Tensor, output_hidden_states: Optional[bool] = None, return_dict: Optional[bool] = None
-    ) -> Union[tuple[tuple], BackboneOutput]:
+        self,
+        pixel_values: Tensor,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        **kwargs,
+    ) -> tuple[tuple] | BackboneOutput:
         r"""
         Examples:
 
         ```python
         >>> import torch
-        >>> import requests
+        >>> import httpx
+        >>> from io import BytesIO
         >>> from PIL import Image
         >>> from transformers import AutoImageProcessor, AutoBackbone
 
         >>> url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        >>> image = Image.open(requests.get(url, stream=True).raw)
+        >>> with httpx.stream("GET", url) as response:
+        ...     image = Image.open(BytesIO(response.read()))
 
         >>> processor = AutoImageProcessor.from_pretrained("czczup/textnet-base")
         >>> model = AutoBackbone.from_pretrained("czczup/textnet-base")

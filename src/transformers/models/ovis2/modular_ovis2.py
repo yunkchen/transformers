@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,15 +13,20 @@
 # limitations under the License.
 
 import math
-from typing import Optional, Union
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 
+from ... import initialization as init
+from ...cache_utils import Cache
 from ...generation import GenerationMixin
-from ...modeling_outputs import BaseModelOutput
+from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from ...modeling_utils import PreTrainedModel
-from ...utils import auto_docstring, can_return_tuple, is_torchdynamo_compiling
+from ...processing_utils import Unpack
+from ...utils import TransformersKwargs, auto_docstring, can_return_tuple
+from ...utils.generic import merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from ..aimv2.modeling_aimv2 import Aimv2Attention, Aimv2EncoderLayer
 from ..auto import AutoModel
 from ..llama.modeling_llama import LlamaMLP, LlamaRMSNorm
@@ -40,6 +44,17 @@ def hard_softmax(logits: torch.Tensor, dim: int):
     ret = y_hard - y_soft.detach() + y_soft
 
     return ret
+
+
+@dataclass
+@auto_docstring
+class BaseModelOutputWithVisualIndicatorFeatures(BaseModelOutputWithPooling):
+    r"""
+    visual_indicator_features (`torch.FloatTensor` of shape `(batch_size, visual_indicator_size)`):
+        Visual indicator features extracted from the model, which can be used for auxiliary tasks or further processing.
+    """
+
+    visual_indicator_features: torch.FloatTensor | None = None
 
 
 class Ovis2ModelOutputWithPast(LlavaNextModelOutputWithPast):
@@ -60,7 +75,7 @@ class Ovis2VisionMLP(LlamaMLP):
 
 class Ovis2VisionEmbeddings(SiglipVisionEmbeddings):
     def __init__(self, config: Ovis2VisionConfig):
-        super().__init__()
+        super().__init__(config)
         self.rms_norm = Ovis2RMSNorm(config.hidden_size, config.rms_norm_eps)
 
     def interpolate_pos_encoding(self):
@@ -82,13 +97,29 @@ class Ovis2VisionAttention(Aimv2Attention):
 
 
 class Ovis2VisionEncoderLayer(Aimv2EncoderLayer):
-    pass
+    def __init__(self, config: Ovis2VisionConfig):
+        super().__init__()
+        self.attention = Ovis2VisionAttention(config)
 
 
 class Ovis2VisionEncoder(SiglipEncoder):
     def __init__(self, config: Ovis2VisionConfig):
-        super().__init__()
+        super().__init__(config)
         self.layers = nn.ModuleList([Ovis2VisionEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+
+    @can_return_tuple
+    @auto_docstring
+    def forward(
+        self,
+        inputs_embeds,
+        attention_mask: torch.Tensor | None = None,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutput:
+        hidden_states = inputs_embeds
+        for encoder_layer in self.layers:
+            hidden_states = encoder_layer(hidden_states, attention_mask, **kwargs)
+
+        return BaseModelOutput(last_hidden_state=hidden_states)
 
 
 class Ovis2VisionTransformer(nn.Module):
@@ -104,33 +135,21 @@ class Ovis2VisionTransformer(nn.Module):
     def forward(
         self,
         pixel_values,
-        attention_mask: Optional[torch.Tensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
+        attention_mask: torch.Tensor | None = None,
+        **kwargs,
     ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-
         hidden_states = self.embeddings(pixel_values)
 
-        encoder_outputs = self.encoder(
+        encoder_outputs: BaseModelOutput = self.encoder(
             inputs_embeds=hidden_states,
             attention_mask=attention_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=True,
+            **kwargs,
         )
 
-        last_hidden_state = encoder_outputs[0]
+        last_hidden_state = encoder_outputs.last_hidden_state
         last_hidden_state = self.rms_norm(last_hidden_state)
 
-        return BaseModelOutput(
-            last_hidden_state=last_hidden_state,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-        )
+        return BaseModelOutput(last_hidden_state=last_hidden_state)
 
 
 class Ovis2VisualEmbeddingTable(nn.Embedding):
@@ -143,6 +162,7 @@ class Ovis2VisualEmbeddingTable(nn.Embedding):
 class Ovis2PreTrainedModel(PreTrainedModel):
     config: Ovis2Config
     base_model_prefix = "model"
+    input_modalities = ("image", "text")
     supports_gradient_checkpointing = True
     _no_split_modules = ["Ovis2VisionAttention"]
     _skip_keys_device_placement = "past_key_values"
@@ -154,9 +174,18 @@ class Ovis2PreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_attention_backend = True
 
+    def _init_weights(self, module):
+        super()._init_weights(module)
+        if isinstance(module, Ovis2VisionEmbeddings):
+            init.copy_(module.position_ids, torch.arange(module.position_ids.shape[-1]).expand((1, -1)))
+
 
 class Ovis2VisionModel(Ovis2PreTrainedModel):
     config: Ovis2VisionConfig
+    _can_record_outputs = {
+        "hidden_states": Ovis2VisionEncoderLayer,
+        "attentions": Ovis2VisionAttention,
+    }
 
     def __init__(self, config: Ovis2VisionConfig):
         super().__init__(config)
@@ -171,10 +200,15 @@ class Ovis2VisionModel(Ovis2PreTrainedModel):
         )
         self.head_norm = nn.LayerNorm(self.vocab_size - self.num_visual_indicator_tokens)
 
-    def forward(self, pixel_values: torch.FloatTensor) -> tuple[torch.Tensor, torch.Tensor]:
-        outputs = self.transformer(pixel_values)
-        last_hidden_state = outputs.last_hidden_state
+        self.post_init()
 
+    @merge_with_config_defaults
+    @capture_outputs
+    def forward(
+        self, pixel_values: torch.FloatTensor, **kwargs: Unpack[TransformersKwargs]
+    ) -> tuple | BaseModelOutputWithVisualIndicatorFeatures:
+        outputs = self.transformer(pixel_values, **kwargs)
+        last_hidden_state = outputs[0]
         if self.config.hidden_stride > 1:
             num_images, seq_len, hidden_dim = last_hidden_state.shape
             hidden_stride = self.config.hidden_stride
@@ -205,7 +239,10 @@ class Ovis2VisionModel(Ovis2PreTrainedModel):
         elif self.config.tokenize_function == "softmax":
             prob_token = nn.functional.softmax(logits, dim=-1)
 
-        return prob_token
+        return BaseModelOutputWithVisualIndicatorFeatures(
+            last_hidden_state=last_hidden_state,
+            pooler_output=prob_token,
+        )
 
 
 class Ovis2Model(LlavaModel):
@@ -222,11 +259,17 @@ class Ovis2Model(LlavaModel):
         self.language_model = AutoModel.from_config(config.text_config)
         del self.multi_modal_projector
 
+    @can_return_tuple
+    @auto_docstring(
+        custom_intro="Obtains image last hidden states from the vision tower and apply multimodal projection."
+    )
     def get_image_features(
         self,
         pixel_values: torch.FloatTensor,
-    ) -> torch.FloatTensor:
-        image_features = self.vision_tower(pixel_values)
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple | BaseModelOutputWithVisualIndicatorFeatures:
+        image_outputs = self.vision_tower(pixel_values, return_dict=True, **kwargs)
+        image_features = image_outputs.pooler_output
         batch_size, img_seq_len, _ = image_features.shape
         padding_tensor = torch.zeros(
             (batch_size, img_seq_len, self.vision_tower.num_visual_indicator_tokens),
@@ -243,29 +286,30 @@ class Ovis2Model(LlavaModel):
             self.visual_vocab_size,
             dtype=torch.long,
         ).to(image_features.device)
-        visual_indicator_features = self.visual_embeddings_table(visual_indicator)
+        image_outputs.pooler_output = image_features
+        image_outputs.visual_indicator_features = self.visual_embeddings_table(visual_indicator)
 
-        return image_features, visual_indicator_features
+        return image_outputs
 
     @can_return_tuple
     @auto_docstring
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        pixel_values: torch.FloatTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[list[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
+        input_ids: torch.LongTensor | None = None,
+        pixel_values: torch.FloatTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        logits_to_keep: int | torch.Tensor = 0,
         **kwargs,
-    ) -> Union[tuple, Ovis2ModelOutputWithPast]:
+    ) -> tuple | Ovis2ModelOutputWithPast:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -278,25 +322,15 @@ class Ovis2Model(LlavaModel):
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         if pixel_values is not None:
-            image_features, visual_indicator_features = self.get_image_features(pixel_values=pixel_values)
+            image_outputs = self.get_image_features(pixel_values=pixel_values, return_dict=True)
+            image_features = image_outputs.pooler_output
+            visual_indicator_features = image_outputs.visual_indicator_features
 
-            if input_ids is None:
-                special_image_mask = inputs_embeds == self.get_input_embeddings()(
-                    torch.tensor(self.config.image_token_id, dtype=torch.long, device=inputs_embeds.device)
-                )
-                special_image_mask = special_image_mask.all(-1)
-            else:
-                special_image_mask = input_ids == self.config.image_token_id
-
-            n_image_tokens = special_image_mask.sum()
-            special_image_mask = special_image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
-            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            image_features = image_features.reshape(-1, image_features.shape[-1])
-            n_image_features = image_features.shape[0]
-            if not is_torchdynamo_compiling() and n_image_tokens != n_image_features:
-                raise ValueError(
-                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
-                )
+            special_image_mask = self.get_placeholder_mask(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                image_features=image_features,
+            )
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
             for i, visual_indicator_id in enumerate(self.visual_indicator_token_ids):
@@ -346,32 +380,31 @@ class Ovis2ForConditionalGeneration(LlavaForConditionalGeneration, GenerationMix
         super().__init__(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-    @property
-    def multi_modal_projector(self):
-        raise AttributeError("Not needed for Ovis2")
-
-    def get_image_features(self, pixel_values: torch.FloatTensor):
-        return self.model.get_image_features(pixel_values=pixel_values)
+    @auto_docstring
+    def get_image_features(
+        self, pixel_values: torch.FloatTensor, **kwargs: Unpack[TransformersKwargs]
+    ) -> tuple | BaseModelOutputWithVisualIndicatorFeatures:
+        return self.model.get_image_features(pixel_values=pixel_values, **kwargs)
 
     @can_return_tuple
     @auto_docstring
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        pixel_values: torch.FloatTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[list[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
+        input_ids: torch.LongTensor | None = None,
+        pixel_values: torch.FloatTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        return_dict: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
+        logits_to_keep: int | torch.Tensor = 0,
         **kwargs,
-    ) -> Union[tuple, Ovis2CausalLMOutputWithPast]:
+    ) -> tuple | Ovis2CausalLMOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -382,7 +415,8 @@ class Ovis2ForConditionalGeneration(LlavaForConditionalGeneration, GenerationMix
 
         ```python
         >>> from PIL import Image
-        >>> import requests
+        >>> import httpx
+        >>> from io import BytesIO
         >>> from transformers import AutoProcessor, Ovis2ForConditionalGeneration
 
         >>> model = Ovis2ForConditionalGeneration.from_pretrained("thisisiron/Ovis2-2B-hf")
@@ -390,7 +424,8 @@ class Ovis2ForConditionalGeneration(LlavaForConditionalGeneration, GenerationMix
 
         >>> prompt = "<|im_start|>user\n<image>\nDescribe the image.<|im_end|>\n<|im_start|>assistant\n"
         >>> url = "http://images.cocodataset.org/val2014/COCO_val2014_000000537955.jpg"
-        >>> image = Image.open(requests.get(url, stream=True).raw)
+        >>> with httpx.stream("GET", url) as response:
+        ...     image = Image.open(BytesIO(response.read()))
 
         >>> inputs = processor(images=image, text=prompt, return_tensors="pt")
 

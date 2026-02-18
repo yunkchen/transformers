@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 Microsoft Research and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +14,6 @@
 """Image processor class for Kosmos2_5."""
 
 import math
-from typing import Optional, Union
 
 import numpy as np
 
@@ -30,10 +28,11 @@ from ...image_utils import (
     ImageInput,
     get_image_size,
     infer_channel_dimension_format,
-    make_list_of_images,
+    make_flat_list_of_images,
     to_numpy_array,
     valid_images,
 )
+from ...processing_utils import ImagesKwargs
 from ...utils import TensorType, is_torch_available, logging
 from ...utils.import_utils import requires_backends
 
@@ -45,10 +44,23 @@ logger = logging.get_logger(__name__)
 DEFAULT_FONT_PATH = "ybelkada/fonts"
 
 
+class Kosmos2_5ImageProcessorKwargs(ImagesKwargs, total=False):
+    r"""
+    patch_size (`Dict[str, int]`, *optional*, defaults to `{"height": 16, "width": 16}`):
+        The patch size to use for the image. According to Kosmos2_5 paper and code, the patch size is 16x16.
+    max_patches (`int`, *optional*, defaults to 4096):
+        The maximum number of patches to extract from the image as per the
+        [KOSMOS 2.5 paper](https://huggingface.co/papers/2309.11419).
+    """
+
+    patch_size: dict[str, int]
+    max_patches: int
+
+
 # Copied from transformers.models.pix2struct.image_processing_pix2struct.torch_extract_patches
 def torch_extract_patches(image_tensor, patch_height, patch_width):
     """
-    Utiliy function to extract patches from a given image tensor. Returns a tensor of shape
+    Utility function to extract patches from a given image tensor. Returns a tensor of shape
     (1, `rows`, `columns`, `num_channels`x `patch_height` x `patch_width`).
 
     Args:
@@ -72,7 +84,7 @@ def torch_extract_patches(image_tensor, patch_height, patch_width):
     return patches.unsqueeze(0)
 
 
-# similar to transformers.models.pix2struct.image_processing_pix2struct.Pix2StructImageProcessor, but delete is_vqa and additionaly return width and height after resizing
+# similar to transformers.models.pix2struct.image_processing_pix2struct.Pix2StructImageProcessor, but delete is_vqa and additionally return width and height after resizing
 class Kosmos2_5ImageProcessor(BaseImageProcessor):
     r"""
     Constructs a Kosmos2_5 image processor.
@@ -88,16 +100,17 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
             The patch size to use for the image. According to Kosmos2_5 paper and code, the patch size is 16x16.
         max_patches (`int`, *optional*, defaults to 4096):
             The maximum number of patches to extract from the image as per the
-            [KOSMOS 2.5 paper](https://arxiv.org/pdf/2309.11419).
+            [KOSMOS 2.5 paper](https://huggingface.co/papers/2309.11419).
     """
 
     model_input_names = ["flattened_patches"]
+    valid_kwargs = Kosmos2_5ImageProcessorKwargs
 
     def __init__(
         self,
         do_convert_rgb: bool = True,
         do_normalize: bool = True,
-        patch_size: Optional[dict[str, int]] = None,
+        patch_size: dict[str, int] | None = None,
         max_patches: int = 4096,
         **kwargs,
     ) -> None:
@@ -112,7 +125,7 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
         image: np.ndarray,
         max_patches: int,
         patch_size: dict,
-        input_data_format: Optional[Union[str, ChannelDimension]] = None,
+        input_data_format: str | ChannelDimension | None = None,
         **kwargs,
     ) -> np.ndarray:
         """
@@ -202,15 +215,12 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
     def normalize(
         self,
         image: np.ndarray,
-        data_format: Optional[Union[str, ChannelDimension]] = None,
-        input_data_format: Optional[Union[str, ChannelDimension]] = None,
+        data_format: str | ChannelDimension | None = None,
+        input_data_format: str | ChannelDimension | None = None,
         **kwargs,
     ) -> np.ndarray:
         """
         Normalize an image. image = (image - image_mean) / image_std.
-
-        The image std is to mimic the tensorflow implementation of the `per_image_standardization`:
-        https://www.tensorflow.org/api_docs/python/tf/image/per_image_standardization
 
         Args:
             image (`np.ndarray`):
@@ -241,21 +251,19 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
     def preprocess(
         self,
         images: ImageInput,
-        do_convert_rgb: Optional[bool] = None,
-        do_normalize: Optional[bool] = None,
-        max_patches: Optional[int] = None,
-        patch_size: Optional[dict[str, int]] = None,
-        return_tensors: Optional[Union[str, TensorType]] = None,
+        do_convert_rgb: bool | None = None,
+        do_normalize: bool | None = None,
+        max_patches: int | None = None,
+        patch_size: dict[str, int] | None = None,
+        return_tensors: str | TensorType | None = None,
         data_format: ChannelDimension = ChannelDimension.FIRST,
-        input_data_format: Optional[Union[str, ChannelDimension]] = None,
+        input_data_format: str | ChannelDimension | None = None,
         **kwargs,
     ) -> ImageInput:
         """
         Preprocess an image or batch of images. The processor first computes the maximum possible number of
         aspect-ratio preserving patches of size `patch_size` that can be extracted from the image. It then pads the
-        image with zeros to make the image respect the constraint of `max_patches`. Before extracting the patches the
-        images are standardized following the tensorflow implementation of `per_image_standardization`
-        (https://www.tensorflow.org/api_docs/python/tf/image/per_image_standardization).
+        image with zeros to make the image respect the constraint of `max_patches`.
 
 
         Args:
@@ -272,10 +280,8 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
             return_tensors (`str` or `TensorType`, *optional*):
                 The type of tensors to return. Can be one of:
                     - Unset: Return a list of `np.ndarray`.
-                    - `TensorType.TENSORFLOW` or `'tf'`: Return a batch of type `tf.Tensor`.
                     - `TensorType.PYTORCH` or `'pt'`: Return a batch of type `torch.Tensor`.
                     - `TensorType.NUMPY` or `'np'`: Return a batch of type `np.ndarray`.
-                    - `TensorType.JAX` or `'jax'`: Return a batch of type `jax.numpy.ndarray`.
             data_format (`ChannelDimension` or `str`, *optional*, defaults to `ChannelDimension.FIRST`):
                 The channel dimension format for the output image. Can be one of:
                 - `"channels_first"` or `ChannelDimension.FIRST`: image in (num_channels, height, width) format.
@@ -296,13 +302,10 @@ class Kosmos2_5ImageProcessor(BaseImageProcessor):
         if kwargs.get("data_format") is not None:
             raise ValueError("data_format is not an accepted input as the outputs are ")
 
-        images = make_list_of_images(images)
+        images = make_flat_list_of_images(images)
 
         if not valid_images(images):
-            raise ValueError(
-                "Invalid image type. Must be of type PIL.Image.Image, numpy.ndarray, "
-                "torch.Tensor, tf.Tensor or jax.ndarray."
-            )
+            raise ValueError("Invalid image type. Must be of type PIL.Image.Image, numpy.ndarray, or torch.Tensor")
 
         # PIL RGBA images are converted to RGB
         if do_convert_rgb:

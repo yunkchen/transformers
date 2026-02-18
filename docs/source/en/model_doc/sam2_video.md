@@ -13,6 +13,10 @@ specific language governing permissions and limitations under the License.
 rendered properly in your Markdown viewer.
 
 -->
+*This model was released on 2024-07-29 and added to Hugging Face Transformers on 2025-08-14.*
+
+# SAM2 Video
+
 <div style="float: right;">
     <div class="flex flex-wrap space-x-1">
         <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-DE3412?style=flat&logo=pytorch&logoColor=white">
@@ -20,8 +24,6 @@ rendered properly in your Markdown viewer.
         <img alt="FlashAttention" src="https://img.shields.io/badge/%E2%9A%A1%EF%B8%8E%20FlashAttention-eae0c8?style=flat">
     </div>
 </div>
-
-# SAM2 Video
 
 ## Overview
 
@@ -53,9 +55,10 @@ SAM2's key strength is its ability to track objects across video frames. Here's 
 
 ```python
 >>> from transformers import Sam2VideoModel, Sam2VideoProcessor
+from accelerate import Accelerator
 >>> import torch
 
->>> device = "cuda" if torch.cuda.is_available() else "cpu"
+>>> device = Accelerator().device
 >>> model = Sam2VideoModel.from_pretrained("facebook/sam2.1-hiera-tiny").to(device, dtype=torch.bfloat16)
 >>> processor = Sam2VideoProcessor.from_pretrained("facebook/sam2.1-hiera-tiny")
 
@@ -71,7 +74,7 @@ SAM2's key strength is its ability to track objects across video frames. Here's 
 >>> inference_session = processor.init_video_session(
 ...     video=video_frames,
 ...     inference_device=device,
-...     torch_dtype=torch.bfloat16,
+...     dtype=torch.bfloat16,
 ... )
 
 >>> # Add click on first frame to select object
@@ -190,7 +193,7 @@ For real-time applications, SAM2 supports processing video frames as they arrive
 >>> # Initialize session for streaming
 >>> inference_session = processor.init_video_session(
 ...     inference_device=device,
-...     torch_dtype=torch.bfloat16,
+...     dtype=torch.bfloat16,
 ... )
 
 >>> # Process frames one by one
@@ -226,7 +229,7 @@ Track multiple objects simultaneously in video by adding them all at once:
 >>> inference_session = processor.init_video_session(
 ...     video=video_frames,
 ...     inference_device=device,
-...     torch_dtype=torch.bfloat16,
+...     dtype=torch.bfloat16,
 ... )
 
 >>> # Add multiple objects on the first frame using batch processing
@@ -313,3 +316,4 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 [[autodoc]] Sam2VideoModel
     - forward
     - propagate_in_video_iterator
+    - get_image_features

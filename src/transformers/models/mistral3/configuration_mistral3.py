@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 HuggingFace Inc. team. All rights reserved.
 #
 #
@@ -14,19 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ...configuration_utils import PretrainedConfig
+from ...configuration_utils import PreTrainedConfig
 from ..auto import CONFIG_MAPPING, AutoConfig
 
 
-class Mistral3Config(PretrainedConfig):
+class Mistral3Config(PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Mistral3ForConditionalGeneration`]. It is used to instantiate an
     Mistral3 model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
     [mistralai/Mistral-Small-3.1-24B-Instruct-2503](https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503)
 
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
 
     Args:
         vision_config (`Union[AutoConfig, dict]`,  *optional*, defaults to `PixtralVisionConfig`):
@@ -45,6 +44,8 @@ class Mistral3Config(PretrainedConfig):
             Whether to use bias in the multimodal projector.
         spatial_merge_size (`int`, *optional*, defaults to 2):
             The downsampling factor for the spatial merge operation.
+        tie_word_embeddings (`bool`, *optional*, defaults to `True`):
+            Whether to tie the input and output embeddings.
 
     Example:
 
@@ -83,6 +84,7 @@ class Mistral3Config(PretrainedConfig):
         vision_feature_layer=-1,
         multimodal_projector_bias=False,
         spatial_merge_size=2,
+        tie_word_embeddings: bool = True,
         **kwargs,
     ):
         self.image_token_index = image_token_index
@@ -134,6 +136,7 @@ class Mistral3Config(PretrainedConfig):
         self.text_config = text_config
         self.multimodal_projector_bias = multimodal_projector_bias
         self.spatial_merge_size = spatial_merge_size
+        self.tie_word_embeddings = tie_word_embeddings
 
         super().__init__(**kwargs)
 

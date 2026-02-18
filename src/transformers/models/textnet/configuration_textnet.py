@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 the Fast authors and HuggingFace Inc. team.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,21 +13,21 @@
 # limitations under the License.
 """TextNet model configuration"""
 
-from transformers import PretrainedConfig
-from transformers.utils import logging
-from transformers.utils.backbone_utils import BackboneConfigMixin, get_aligned_output_features_output_indices
+from ...backbone_utils import BackboneConfigMixin
+from ...configuration_utils import PreTrainedConfig
+from ...utils import logging
 
 
 logger = logging.get_logger(__name__)
 
 
-class TextNetConfig(BackboneConfigMixin, PretrainedConfig):
+class TextNetConfig(BackboneConfigMixin, PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`TextNextModel`]. It is used to instantiate a
     TextNext model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of the
     [czczup/textnet-base](https://huggingface.co/czczup/textnet-base). Configuration objects inherit from
-    [`PretrainedConfig`] and can be used to control the model outputs.Read the documentation from [`PretrainedConfig`]
+    [`PreTrainedConfig`] and can be used to control the model outputs.Read the documentation from [`PreTrainedConfig`]
     for more information.
 
     Args:
@@ -127,9 +126,7 @@ class TextNetConfig(BackboneConfigMixin, PretrainedConfig):
 
         self.depths = [len(layer) for layer in self.conv_layer_kernel_sizes]
         self.stage_names = ["stem"] + [f"stage{idx}" for idx in range(1, 5)]
-        self._out_features, self._out_indices = get_aligned_output_features_output_indices(
-            out_features=out_features, out_indices=out_indices, stage_names=self.stage_names
-        )
+        self.set_output_features_output_indices(out_indices=out_indices, out_features=out_features)
 
 
 __all__ = ["TextNetConfig"]

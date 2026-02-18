@@ -16,6 +16,7 @@
 import copy
 import io
 import unittest
+from functools import cached_property
 
 import pytest
 import requests
@@ -24,7 +25,6 @@ from parameterized import parameterized
 
 from transformers import FuyuConfig, is_torch_available, is_vision_available
 from transformers.testing_utils import require_torch, require_torch_accelerator, slow, torch_device
-from transformers.utils import cached_property
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor, random_attention_mask
@@ -169,11 +169,8 @@ class FuyuModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
         {"text-generation": FuyuForCausalLM, "image-text-to-text": FuyuForCausalLM} if is_torch_available() else {}
     )
 
-    test_head_masking = False
-    test_pruning = False
     test_cpu_offload = False
     test_disk_offload = False
-    test_model_parallel = False
 
     def setUp(self):
         self.model_tester = FuyuModelTester(self)
@@ -198,24 +195,6 @@ class FuyuModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
             image_patches = curr_input_dict["image_patches"]
             with self.assertRaises(ValueError):
                 _ = model(input_ids=input_ids, image_patches=image_patches)
-
-    @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant_false(self):
-        pass
 
     @parameterized.expand([("random",), ("same",)])
     @pytest.mark.generate
@@ -244,7 +223,15 @@ class FuyuModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
         super().test_model_parallelism()
 
     @unittest.skip(reason="Fuyu `prepare_inputs_for_generation` function doesn't have cache position.")
-    def test_generate_continue_from_inputs_embeds():
+    def test_generate_continue_from_inputs_embeds(self):
+        pass
+
+    @unittest.skip("Persimmon backbone applies key/query norm which doesn't work with packing")
+    def test_flash_attention_2_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip("Persimmon backbone applies key/query norm which doesn't work with packing")
+    def test_flash_attention_2_padding_matches_padding_free_with_position_ids_and_fa_kwargs(self):
         pass
 
     @unittest.skip("Persimmon backbone applies key/query norm which doesn't work with packing")
@@ -253,6 +240,28 @@ class FuyuModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
 
     @unittest.skip("Persimmon backbone applies key/query norm which doesn't work with packing")
     def test_sdpa_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip(reason="Fuyu has no separate base model without a head.")
+    def test_model_base_model_prefix(self):
+        pass
+
+    def _image_features_prepare_config_and_inputs(self):
+        """
+        Helper method to extract only image-related inputs from the full set of inputs, for testing `get_image_features`.
+
+        The Fuyu model uses image_patches, except for get_image_features, where they're called pixel_values.
+        """
+        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+        inputs_dict = {"pixel_values": inputs_dict["image_patches"]}
+        return config, inputs_dict
+
+    @unittest.skip("Skip get_image_features tests as Fuyu's image features originate from a simple Linear")
+    def test_get_image_features_hidden_states(self):
+        pass
+
+    @unittest.skip("Skip get_image_features tests as Fuyu's image features originate from a simple Linear")
+    def test_get_image_features_attentions(self):
         pass
 
 
@@ -265,7 +274,7 @@ class FuyuModelIntegrationTest(unittest.TestCase):
 
     @cached_property
     def default_model(self):
-        return FuyuForCausalLM.from_pretrained("adept/fuyu-8b", torch_dtype="float16", device_map=torch_device)
+        return FuyuForCausalLM.from_pretrained("adept/fuyu-8b", dtype="float16", device_map=torch_device)
 
     def test_greedy_generation(self):
         processor = self.default_processor

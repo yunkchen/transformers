@@ -19,9 +19,7 @@ from ..utils import OptionalDependencyNotAvailable, _LazyModule, is_torch_availa
 _import_structure = {
     "aqlm": ["replace_with_aqlm_linear"],
     "awq": [
-        "fuse_awq_modules",
         "post_init_awq_exllama_modules",
-        "post_init_awq_ipex_modules",
         "replace_quantization_scales",
         "replace_with_awq_linear",
     ],
@@ -32,12 +30,9 @@ _import_structure = {
         "unpack_weights",
     ],
     "bitsandbytes": [
+        "Bnb4bitQuantize",
         "dequantize_and_replace",
-        "get_keys_to_not_convert",
-        "replace_8bit_linear",
         "replace_with_bnb_linear",
-        "set_module_8bit_tensor_to_device",
-        "set_module_quantized_tensor_to_device",
         "validate_bnb_backend_availability",
     ],
     "deepspeed": [
@@ -57,6 +52,7 @@ _import_structure = {
     "finegrained_fp8": ["FP8Linear", "replace_with_fp8_linear"],
     "fsdp": ["is_fsdp_enabled", "is_fsdp_managed_module"],
     "ggml": [
+        "GGUF_CONFIG_DEFAULTS_MAPPING",
         "GGUF_CONFIG_MAPPING",
         "GGUF_TOKENIZER_MAPPING",
         "_gguf_parse_value",
@@ -72,9 +68,12 @@ _import_structure = {
     "hqq": ["prepare_for_hqq_linear"],
     "hub_kernels": [
         "LayerRepository",
+        "lazy_load_kernel",
         "register_kernel_mapping",
         "replace_kernel_forward_from_hub",
         "use_kernel_forward_from_hub",
+        "use_kernel_func_from_hub",
+        "use_kernelized_func",
     ],
     "integration_utils": [
         "INTEGRATION_TO_CALLBACK",
@@ -108,7 +107,6 @@ _import_structure = {
         "is_optuna_available",
         "is_ray_available",
         "is_ray_tune_available",
-        "is_sigopt_available",
         "is_swanlab_available",
         "is_tensorboard_available",
         "is_trackio_available",
@@ -116,8 +114,13 @@ _import_structure = {
         "rewrite_logs",
         "run_hp_search_optuna",
         "run_hp_search_ray",
-        "run_hp_search_sigopt",
         "run_hp_search_wandb",
+    ],
+    "liger": ["apply_liger_kernel"],
+    "moe": [
+        "batched_mm_experts_forward",
+        "grouped_mm_experts_forward",
+        "use_experts_implementation",
     ],
     "mxfp4": [
         "Mxfp4GptOssExperts",
@@ -126,9 +129,16 @@ _import_structure = {
         "load_and_swizzle_mxfp4",
         "quantize_to_mxfp4",
         "replace_with_mxfp4_linear",
+        "swizzle_mxfp4",
+    ],
+    "neftune": [
+        "activate_neftune",
+        "deactivate_neftune",
+        "neftune_post_forward_hook",
     ],
     "peft": ["PeftAdapterMixin"],
     "quanto": ["replace_with_quanto_layers"],
+    "sinq": ["SinqDeserialize", "SinqQuantize"],
     "spqr": ["replace_with_spqr_linear"],
     "vptq": ["replace_with_vptq_linear"],
 }
@@ -144,17 +154,11 @@ else:
         "convert_and_export_with_cache",
     ]
 
-try:
-    if not is_torch_greater_or_equal("2.3"):
-        raise OptionalDependencyNotAvailable()
-except OptionalDependencyNotAvailable:
-    pass
-else:
-    _import_structure["tensor_parallel"] = [
-        "shard_and_distribute_module",
-        "ALL_PARALLEL_STYLES",
-        "translate_to_torch_parallel_style",
-    ]
+_import_structure["tensor_parallel"] = [
+    "shard_and_distribute_module",
+    "ALL_PARALLEL_STYLES",
+    "translate_to_torch_parallel_style",
+]
 try:
     if not is_torch_greater_or_equal("2.5"):
         raise OptionalDependencyNotAvailable()
@@ -168,9 +172,7 @@ else:
 if TYPE_CHECKING:
     from .aqlm import replace_with_aqlm_linear
     from .awq import (
-        fuse_awq_modules,
         post_init_awq_exllama_modules,
-        post_init_awq_ipex_modules,
         replace_quantization_scales,
         replace_with_awq_linear,
     )
@@ -181,12 +183,9 @@ if TYPE_CHECKING:
         unpack_weights,
     )
     from .bitsandbytes import (
+        Bnb4bitQuantize,
         dequantize_and_replace,
-        get_keys_to_not_convert,
-        replace_8bit_linear,
         replace_with_bnb_linear,
-        set_module_8bit_tensor_to_device,
-        set_module_quantized_tensor_to_device,
         validate_bnb_backend_availability,
     )
     from .deepspeed import (
@@ -206,6 +205,7 @@ if TYPE_CHECKING:
     from .finegrained_fp8 import FP8Linear, replace_with_fp8_linear
     from .fsdp import is_fsdp_enabled, is_fsdp_managed_module
     from .ggml import (
+        GGUF_CONFIG_DEFAULTS_MAPPING,
         GGUF_CONFIG_MAPPING,
         GGUF_TOKENIZER_MAPPING,
         _gguf_parse_value,
@@ -216,9 +216,12 @@ if TYPE_CHECKING:
     from .hqq import prepare_for_hqq_linear
     from .hub_kernels import (
         LayerRepository,
+        lazy_load_kernel,
         register_kernel_mapping,
         replace_kernel_forward_from_hub,
         use_kernel_forward_from_hub,
+        use_kernel_func_from_hub,
+        use_kernelized_func,
     )
     from .integration_utils import (
         INTEGRATION_TO_CALLBACK,
@@ -252,7 +255,6 @@ if TYPE_CHECKING:
         is_optuna_available,
         is_ray_available,
         is_ray_tune_available,
-        is_sigopt_available,
         is_swanlab_available,
         is_tensorboard_available,
         is_trackio_available,
@@ -260,8 +262,13 @@ if TYPE_CHECKING:
         rewrite_logs,
         run_hp_search_optuna,
         run_hp_search_ray,
-        run_hp_search_sigopt,
         run_hp_search_wandb,
+    )
+    from .liger import apply_liger_kernel
+    from .moe import (
+        batched_mm_experts_forward,
+        grouped_mm_experts_forward,
+        use_experts_implementation,
     )
     from .mxfp4 import (
         Mxfp4GptOssExperts,
@@ -269,9 +276,12 @@ if TYPE_CHECKING:
         load_and_swizzle_mxfp4,
         quantize_to_mxfp4,
         replace_with_mxfp4_linear,
+        swizzle_mxfp4,
     )
+    from .neftune import activate_neftune, deactivate_neftune, neftune_post_forward_hook
     from .peft import PeftAdapterMixin
     from .quanto import replace_with_quanto_layers
+    from .sinq import SinqDeserialize, SinqQuantize
     from .spqr import replace_with_spqr_linear
     from .vptq import replace_with_vptq_linear
 
@@ -283,17 +293,11 @@ if TYPE_CHECKING:
     else:
         from .executorch import TorchExportableModuleWithStaticCache, convert_and_export_with_cache
 
-    try:
-        if not is_torch_greater_or_equal("2.3"):
-            raise OptionalDependencyNotAvailable()
-    except OptionalDependencyNotAvailable:
-        pass
-    else:
-        from .tensor_parallel import (
-            ALL_PARALLEL_STYLES,
-            shard_and_distribute_module,
-            translate_to_torch_parallel_style,
-        )
+    from .tensor_parallel import (
+        ALL_PARALLEL_STYLES,
+        shard_and_distribute_module,
+        translate_to_torch_parallel_style,
+    )
 
     try:
         if not is_torch_greater_or_equal("2.5"):

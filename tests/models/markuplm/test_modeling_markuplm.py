@@ -14,10 +14,10 @@
 
 
 import unittest
+from functools import cached_property
 
 from transformers import MarkupLMConfig, is_torch_available
 from transformers.testing_utils import require_torch, slow, torch_device
-from transformers.utils import cached_property
 
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, ids_tensor
@@ -368,7 +368,7 @@ class MarkupLMModelIntegrationTest(unittest.TestCase):
 
     @slow
     def test_forward_pass_no_head(self):
-        model = MarkupLMModel.from_pretrained("microsoft/markuplm-base").to(torch_device)
+        model = MarkupLMModel.from_pretrained("microsoft/markuplm-base", dtype=torch.float32).to(torch_device)
 
         processor = self.default_processor
 

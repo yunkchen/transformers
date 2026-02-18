@@ -34,12 +34,11 @@ model with mixture of experts (moe) - one with 21B total, 3B active parameters a
 It uses the standard [Llama](./llama) at its core combined with a specialized MoE based on [Mixtral](./mixtral) with additional shared
 experts.
 
-Other models from the family can be found at [Ernie 4.5](./ernie4_5).
+Other models from the family can be found at [Ernie 4.5](./ernie4_5) and [Ernie 4.5 VL MoE](./ernie4_5_vl_moe.md).
 
 <div class="flex justify-center">
     <img src="https://ernie.baidu.com/blog/posts/ernie4.5/overview.png"/>
 </div>
-
 
 ## Usage Tips
 
@@ -56,7 +55,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
 )
 
 # prepare the model input
@@ -96,7 +95,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     tp_plan="auto",
 )
 
@@ -166,7 +165,6 @@ generate_text = tokenizer.decode(output_ids, skip_special_tokens=True)
 
 This model was contributed by [Anton Vlasjuk](https://huggingface.co/AntonV).
 The original code can be found [here](https://github.com/PaddlePaddle/ERNIE).
-
 
 ## Ernie4_5_MoeConfig
 

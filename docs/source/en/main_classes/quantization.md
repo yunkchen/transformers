@@ -43,6 +43,7 @@ Learn how to quantize models in the [Quantization](../quantization) guide.
 [[autodoc]] AwqConfig
 
 ## EetqConfig
+
 [[autodoc]] EetqConfig
 
 ## GPTQConfig
@@ -104,3 +105,7 @@ Learn how to quantize models in the [Quantization](../quantization) guide.
 ## AutoRoundConfig
 
 [[autodoc]] AutoRoundConfig
+
+## SinqConfig
+
+[[autodoc]] SinqConfig

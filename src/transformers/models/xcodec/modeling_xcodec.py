@@ -1,5 +1,4 @@
-# coding=utf-8
-# Copyright 2024 Descript and The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,13 +15,15 @@
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Union
+from functools import lru_cache
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...modeling_utils import PreTrainedModel
+from ... import initialization as init
+from ...audio_utils import conv1d_output_length
+from ...modeling_utils import PreTrainedAudioTokenizerBase
 from ...utils import ModelOutput, auto_docstring
 from ..auto import AutoModel
 from .configuration_xcodec import XcodecConfig
@@ -38,8 +39,8 @@ class XcodecOutput(ModelOutput):
             Decoded audio values obtained using the decoder part of Xcodec.
     """
 
-    audio_codes: Optional[torch.LongTensor] = None
-    audio_values: Optional[torch.FloatTensor] = None
+    audio_codes: torch.LongTensor | None = None
+    audio_values: torch.FloatTensor | None = None
 
 
 @dataclass
@@ -50,7 +51,7 @@ class XcodecEncoderOutput(ModelOutput):
             Discrete code indices computed using `model.encode`.
     """
 
-    audio_codes: Optional[torch.LongTensor] = None
+    audio_codes: torch.LongTensor | None = None
 
 
 @dataclass
@@ -61,7 +62,7 @@ class XcodecDecoderOutput(ModelOutput):
             Decoded audio values obtained using the decoder part of Xcodec.
     """
 
-    audio_values: Optional[torch.FloatTensor] = None
+    audio_values: torch.FloatTensor | None = None
 
 
 class ResidualUnit(nn.Module):
@@ -115,15 +116,19 @@ class SemanticEncoder(nn.Module):
         super().__init__()
         if len(config.strides) != len(config.channel_ratios):
             raise ValueError("Number of strides must match the number of channel_ratios.")
-
         self.conv = nn.Conv1d(
-            config.input_channels, config.encoder_channels, config.kernel_size, 1, config.kernel_size // 2, bias=False
+            config.semantic_hidden_size,
+            config.semantic_hidden_size,
+            config.kernel_size,
+            1,
+            config.kernel_size // 2,
+            bias=False,
         )
 
-        in_channels = config.encoder_channels
+        in_channels = config.semantic_hidden_size
         conv_blocks = []
         for i, stride in enumerate(config.strides):
-            out_channels = int(config.encoder_channels * config.channel_ratios[i])
+            out_channels = int(config.semantic_hidden_size * config.channel_ratios[i])
             conv_blocks += [SemanticEncoderBlock(config, in_channels, out_channels, stride)]
             in_channels = out_channels
 
@@ -171,8 +176,8 @@ class SemanticDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.conv1 = nn.Conv1d(
-            in_channels=config.decoder_channels,
-            out_channels=int(config.decoder_channels * config.channel_ratios[0]),
+            in_channels=config.semantic_hidden_size,
+            out_channels=int(config.semantic_hidden_size * config.channel_ratios[0]),
             kernel_size=config.kernel_size,
             stride=1,
             padding=config.kernel_size // 2,
@@ -180,19 +185,19 @@ class SemanticDecoder(nn.Module):
         )
         conv_blocks = []
         for i, stride in enumerate(config.strides):
-            in_channels = int(config.decoder_channels * config.channel_ratios[i])
+            in_channels = int(config.semantic_hidden_size * config.channel_ratios[i])
 
             if i < (len(config.channel_ratios) - 1):
-                out_channels = int(config.decoder_channels * config.channel_ratios[i + 1])
+                out_channels = int(config.semantic_hidden_size * config.channel_ratios[i + 1])
             else:
-                out_channels = config.decoder_channels
+                out_channels = config.semantic_hidden_size
 
             conv_blocks += [SemanticDecoderBlock(config, in_channels, out_channels, stride)]
 
         self.conv_blocks = nn.ModuleList(conv_blocks)
         self.conv2 = nn.Conv1d(
-            config.decoder_channels,
-            config.output_channels,
+            config.semantic_hidden_size,
+            config.semantic_hidden_size,
             config.kernel_size,
             stride=1,
             padding=config.kernel_size // 2,
@@ -263,7 +268,7 @@ class XcodecVectorQuantization(nn.Module):
 
 class XcodecResidualVectorQuantization(nn.Module):
     """
-    Residual vector quantization implementation. Follows Algorithm 1 in https://arxiv.org/pdf/2107.03312.pdf
+    Residual vector quantization implementation. Follows Algorithm 1 in https://huggingface.co/papers/2107.03312
     """
 
     def __init__(self, config: XcodecConfig):
@@ -312,7 +317,7 @@ class XcodecResidualVectorQuantization(nn.Module):
 
 
 @auto_docstring
-class XcodecPreTrainedModel(PreTrainedModel):
+class XcodecPreTrainedModel(PreTrainedAudioTokenizerBase):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
     models.
@@ -321,29 +326,49 @@ class XcodecPreTrainedModel(PreTrainedModel):
     config_class = XcodecConfig
     base_model_prefix = "xcodec"
     main_input_name = "input_values"
-    supports_gradient_checkpointing = False
+    input_modalities = "audio"
 
+    @torch.no_grad()
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
-                module.bias.data.zero_()
-
+                init.zeros_(module.bias)
         elif isinstance(module, (nn.LayerNorm, nn.GroupNorm)):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            init.zeros_(module.bias)
+            init.ones_(module.weight)
         elif isinstance(module, nn.Conv1d):
-            nn.init.kaiming_normal_(module.weight)
+            init.kaiming_normal_(module.weight)
             if module.bias is not None:
                 k = math.sqrt(module.groups / (module.in_channels * module.kernel_size[0]))
-                nn.init.uniform_(module.bias, a=-k, b=k)
+                init.uniform_(module.bias, a=-k, b=k)
+        elif module.__class__.__name__ == "Snake1d":
+            init.ones_(module.alpha)
+        elif isinstance(module, nn.ConvTranspose1d):
+            module.reset_parameters()
+        elif isinstance(module, nn.Embedding):
+            init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, XcodecModel):
+            # The conv1d are not handled correctly, as `self.acoustic_encoder/decoder` are initialized from a PreTrainedModel,
+            # but then only the submodules are used (which are not PreTrainedModels...) -> here we reinit them as in DacModel
+            for submodule in module.acoustic_encoder.modules():
+                if isinstance(submodule, nn.Conv1d):
+                    init.trunc_normal_(submodule.weight, std=0.02)
+                    init.constant_(submodule.bias, 0)
+            for submodule in module.acoustic_decoder.modules():
+                if isinstance(submodule, nn.Conv1d):
+                    init.trunc_normal_(submodule.weight, std=0.02)
+                    init.constant_(submodule.bias, 0)
+        elif isinstance(module, XcodecEuclideanCodebook):
+            init.copy_(module.inited, torch.Tensor([True]))
+            init.zeros_(module.cluster_size)
+            init.zeros_(module.embed)
+            init.zeros_(module.embed_avg)
 
     def apply_weight_norm(self):
         """Apply weight norm in the acoustic encoder and decoder because the original checkpoint has weight norm applied."""
-        weight_norm = torch.nn.utils.weight_norm
-        if hasattr(torch.nn.utils.parametrizations, "weight_norm"):
-            weight_norm = torch.nn.utils.parametrizations.weight_norm
+        weight_norm = torch.nn.utils.parametrizations.weight_norm
 
         weight_norm(self.acoustic_encoder.conv1)
         weight_norm(self.acoustic_encoder.conv2)
@@ -374,6 +399,40 @@ class XcodecPreTrainedModel(PreTrainedModel):
                 if hasattr(m, "parametrizations") and "weight" in m.parametrizations:
                     torch.nn.utils.parametrize.remove_parametrizations(m, "weight", leave_parametrized=True)
 
+    @lru_cache
+    def _get_conv1d_layers(self, module):
+        """
+        Recursively iterate to fetch all Conv1d layers.
+        """
+
+        def get_conv1d_layers_recursive(module: nn.Module):
+            params_list = []
+
+            if isinstance(module, nn.Conv1d):
+                params_list.append(module)
+
+            # Recursively check all child modules
+            for child in module.children():
+                params_list.extend(get_conv1d_layers_recursive(child))
+
+            return params_list
+
+        return tuple(get_conv1d_layers_recursive(module))
+
+    def _get_conv1d_output_lengths(self, input_length, module=None):
+        """
+        For a given module, compute the output length that would be obtained after all Conv1d layers.
+        """
+        if module is None:
+            module = self
+
+        conv1d_layers = self._get_conv1d_layers(module)
+
+        for layer in conv1d_layers:
+            input_length = conv1d_output_length(layer, input_length)
+
+        return input_length
+
 
 @auto_docstring(custom_intro="""The Xcodec neural audio codec model.""")
 class XcodecModel(XcodecPreTrainedModel):
@@ -381,17 +440,20 @@ class XcodecModel(XcodecPreTrainedModel):
         super().__init__(config)
         self.config = config
         self.pad = config.hop_length // 2
-        dac = AutoModel.from_config(config.acoustic_model_config)
-        self.acoustic_encoder = dac.encoder
-        self.acoustic_decoder = dac.decoder
+        acoustic_model = AutoModel.from_config(config.acoustic_model_config)
+        self.acoustic_encoder = acoustic_model.encoder
+        self.acoustic_decoder = acoustic_model.decoder
         self._adjust_dac_decoder(self.acoustic_decoder)
         self.encoder_semantic = SemanticEncoder(config)
         self.decoder_semantic = SemanticDecoder(config)
-        self.semantic_model = AutoModel.from_config(config.semantic_model_config)
-        self.fc = nn.Linear(config.hidden_dim, config.hidden_dim)
-        self.fc1 = nn.Linear(config.hidden_dim, config.intermediate_dim)
-        self.fc2 = nn.Linear(config.hidden_dim, config.output_dim)
+        self.semantic_model = AutoModel.from_config(config.semantic_model_config).eval()
+        self.fc = nn.Linear(config.hidden_size, config.hidden_size)
+        self.fc1 = nn.Linear(config.hidden_size, config.semantic_model_config.hidden_size)
+        self.fc2 = nn.Linear(config.hidden_size, config.acoustic_model_config.hidden_size)
         self.quantizer = XcodecResidualVectorQuantization(config)
+
+        # Initialize weights and apply final processing
+        self.post_init()
 
     @staticmethod
     def _adjust_dac_decoder(decoder: nn.Module):
@@ -421,36 +483,26 @@ class XcodecModel(XcodecPreTrainedModel):
     def encode(
         self,
         input_values: torch.Tensor,
-        bandwidth: Optional[float] = None,
-        return_dict: Optional[bool] = None,
-        **kwargs,
-    ) -> Union[torch.Tensor, XcodecEncoderOutput]:
-        """
-        Encodes the input audio waveform into discrete audio codes.
-
-        Args:
-            input_values (`torch.FloatTensor` of shape `(batch_size, channels, num_samples)`):
-                Float values of the input audio waveform.
-            bandwidth (`float`, *optional*):
-                The target bandwidth in (kbps) supports only values in `config.target_bandwidths`.
-                Defaults to the highest available bandwidth `4.0` kbps.
-            return_dict (`bool`, *optional*):
-                Whether or not to return a [`~utils.ModelOutput`].
+        bandwidth: float | None = None,
+        return_dict: bool | None = None,
+    ) -> torch.Tensor | XcodecEncoderOutput:
+        r"""
+        input_values (`torch.FloatTensor` of shape `(batch_size, channels, num_samples)`):
+            Float values of the input audio waveform.
+        bandwidth (`float`, *optional*):
+            The target bandwidth in (kbps) supports only values in `config.target_bandwidths`.
+            Defaults to the highest available bandwidth `4.0` kbps.
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~utils.ModelOutput`].
 
         Returns:
             `torch.LongTensor` of shape `(batch_size, num_quantizers, codes_length)` containing the discrete encoded audio codes.
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
 
-        if input_values.ndim != 3:
-            raise ValueError(
-                f"Expected input shape (batch_size, channels, num_samples), but got shape {input_values.shape}"
-            )
-
-        _, channels, self._input_length = input_values.shape
-
-        if channels not in (1, 2):
-            raise ValueError(f"Number of audio channels must be 1 or 2, but got {channels}")
+        channels = input_values.shape[1]
+        if channels != 1:
+            raise ValueError(f"Audio must be mono, but got {channels}")
 
         if bandwidth is None:
             bandwidth = self.config.target_bandwidths[-1]
@@ -461,11 +513,13 @@ class XcodecModel(XcodecPreTrainedModel):
 
         e_semantic_input = self._extract_semantic_features(input_values).detach()
         e_semantic = self.encoder_semantic(e_semantic_input.transpose(1, 2))
-        e_acoustic = self.acoustic_encoder(input_values)
 
-        if e_acoustic.shape[2] != e_semantic.shape[2]:
-            # make sure they line up if frames don't match
-            e_acoustic = self.acoustic_encoder(F.pad(input_values[:, 0, :], (self.pad, self.pad)).unsqueeze(1))
+        # original codebase infer to get the output length, but we can directly infer it
+        # from the model and know whether we should pad
+        if self._get_conv1d_output_lengths(input_values.shape[2], self.acoustic_encoder) != e_semantic.shape[2]:
+            e_acoustic = self.acoustic_encoder(F.pad(input_values, (self.pad, self.pad)))
+        else:
+            e_acoustic = self.acoustic_encoder(input_values)
 
         embeddings = torch.cat([e_acoustic, e_semantic], dim=1)
         embeddings = self.fc(embeddings.transpose(1, 2)).transpose(1, 2)
@@ -479,22 +533,19 @@ class XcodecModel(XcodecPreTrainedModel):
 
     @auto_docstring
     def decode(
-        self, audio_codes: torch.Tensor, return_dict: Optional[bool] = None, **kwargs
-    ) -> Union[torch.Tensor, XcodecDecoderOutput]:
-        """
-        Decode the given discrete codes into an output audio waveform.
-
-        The produced audio waveform is longer than the audio input, so it's automatically trimmed to match the original input.
-
-        Args:
-            audio_codes (`torch.LongTensor`  of shape `(batch_size, num_quantizers, codes_length)`):
-                Discrete code indices computed using `model.encode`.
-
-            return_dict (`bool`, *optional*):
-                Whether or not to return a [`~utils.ModelOutput`]
+        self,
+        audio_codes: torch.Tensor,
+        return_dict: bool | None = None,
+    ) -> torch.Tensor | XcodecDecoderOutput:
+        r"""
+        audio_codes (`torch.LongTensor`  of shape `(batch_size, num_quantizers, codes_length)`):
+            Discrete code indices computed using `model.encode`.
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~utils.ModelOutput`]
 
         Returns:
-            Decoded audio values of shape `(batch_size, channels, num_samples)` obtained using the decoder part of Xcodec.
+            Decoded audio values of shape `(batch_size, channels, num_samples)` obtained using the decoder part of
+            Xcodec.
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
 
@@ -502,13 +553,6 @@ class XcodecModel(XcodecPreTrainedModel):
         quantized = self.quantizer.decode(audio_codes)
         quantized_acoustic = self.fc2(quantized.transpose(1, 2)).transpose(1, 2)
         audio_values = self.acoustic_decoder(quantized_acoustic)
-
-        if getattr(self, "_input_length", None) is not None:
-            output_length = audio_values.shape[-1]
-            if self._input_length != output_length:
-                extra = output_length - self._input_length
-                start = extra // 2
-                audio_values = audio_values[..., start : start + self._input_length]
 
         if not return_dict:
             return audio_values
@@ -519,23 +563,21 @@ class XcodecModel(XcodecPreTrainedModel):
     def forward(
         self,
         input_values: torch.Tensor,
-        audio_codes: Optional[torch.Tensor] = None,
-        bandwidth: Optional[float] = None,
-        return_dict: Optional[bool] = None,
-        **kwargs,
-    ) -> Union[tuple[torch.Tensor, torch.Tensor], XcodecOutput]:
+        audio_codes: torch.Tensor | None = None,
+        bandwidth: float | None = None,
+        return_dict: bool | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor] | XcodecOutput:
         r"""
-        Encodes and quantizes the input audio into discrete codes, then decodes those codes back into an audio waveform.
-        Args:
-            input_values (`torch.FloatTensor` of shape `(batch_size, channels, num_samples)`):
-                The raw float values of the input audio waveform.
-            audio_codes (`torch.LongTensor`  of shape `(batch_size, num_quantizers, codes_length)`:
-                Discrete code indices computed using `model.encode`.
-            bandwidth (`float`, *optional*):
-                Target bandwidth in kbps. Must be one of `config.target_bandwidths`.
-                Defaults to the highest available bandwidth.
-            return_dict (`bool`, *optional*):
-                Whether to return a [`XcodecOutput`] instead of a plain tuple.
+        input_values (`torch.FloatTensor` of shape `(batch_size, channels, num_samples)`):
+            The raw float values of the input audio waveform.
+        audio_codes (`torch.LongTensor`  of shape `(batch_size, num_quantizers, codes_length)`:
+            Discrete code indices computed using `model.encode`.
+        bandwidth (`float`, *optional*):
+            Target bandwidth in kbps. Must be one of `config.target_bandwidths`. Defaults to the highest available bandwidth.
+        bandwidth (`float`, *optional*):
+            Target bandwidth in kbps. Must be one of `config.target_bandwidths`. Defaults to the highest available bandwidth.
+        return_dict (`bool`, *optional*):
+            Whether to return a [`XcodecOutput`] instead of a plain tuple.
 
         Returns:
             `XcodecOutput` or tuple `(audio_codes, audio_values)`:
@@ -548,12 +590,13 @@ class XcodecModel(XcodecPreTrainedModel):
         >>> from datasets import load_dataset
         >>> from transformers import AutoFeatureExtractor, XcodecModel
 
-        >>> dataset = load_dataset("hf-internal-testing/ashraq-esc50-1-dog-example")
-        >>> audio_sample = dataset["train"]["audio"][0]["array"]
-
-        >>> model_id = "Manel/X-Codec"
+        >>> model_id = "hf-audio/xcodec-hubert-librispeech"
         >>> model = XcodecModel.from_pretrained(model_id)
         >>> feature_extractor = AutoFeatureExtractor.from_pretrained(model_id)
+
+        >>> dataset = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+        >>> dataset = dataset.cast_column("audio", Audio(sampling_rate=feature_extractor.sampling_rate))
+        >>> audio_sample = dataset[0]['audio']['array']
 
         >>> inputs = feature_extractor(raw_audio=audio_sample, return_tensors="pt")
 
@@ -563,11 +606,12 @@ class XcodecModel(XcodecPreTrainedModel):
         ```
         """
         return_dict = return_dict if return_dict is not None else self.config.return_dict
+        length = input_values.shape[-1]
 
         if audio_codes is None:
             audio_codes = self.encode(input_values, bandwidth, return_dict=False)
 
-        audio_values = self.decode(audio_codes, return_dict=return_dict)[0]
+        audio_values = self.decode(audio_codes, return_dict=return_dict)[0][..., :length]
 
         if not return_dict:
             return (audio_codes, audio_values)

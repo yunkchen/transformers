@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ...configuration_utils import PretrainedConfig
+from ...configuration_utils import PreTrainedConfig
 from ..auto import CONFIG_MAPPING, AutoConfig
 
 
-class Cohere2VisionConfig(PretrainedConfig):
+class Cohere2VisionConfig(PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Cohere2VisionForConditionalGeneration`]. It is used to instantiate an
     Cohere2 Vision model according to the specified arguments, defining the model architecture.
 
     [CohereLabs/command-a-vision-07-2025](https://huggingface.co/CohereLabs/command-a-vision-07-2025)
 
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
 
     Args:
         vision_config (`Union[AutoConfig, dict]`,  *optional*, defaults to `SiglipVisionConfig`):
@@ -37,6 +37,8 @@ class Cohere2VisionConfig(PretrainedConfig):
             The token ID to use as placeholder for the image input.
         alignment_intermediate_size (`int`, *optional*, defaults to 36864):
             The size of the intermediate layer for alignment.
+        tie_word_embeddings (`bool`, *optional*, defaults to `True`):
+            Whether to tie weight embeddings
     """
 
     model_type = "cohere2_vision"
@@ -49,9 +51,9 @@ class Cohere2VisionConfig(PretrainedConfig):
         downsample_factor=2,
         image_token_id=255036,
         alignment_intermediate_size=36864,
+        tie_word_embeddings=True,
         **kwargs,
     ):
-        super().__init__(**kwargs)
         self.downsample_factor = downsample_factor
         self.image_token_id = image_token_id
         self.alignment_intermediate_size = alignment_intermediate_size
@@ -74,9 +76,11 @@ class Cohere2VisionConfig(PretrainedConfig):
             text_config["model_type"] = text_config.get("model_type", "cohere2")
             text_config = CONFIG_MAPPING[text_config["model_type"]](**text_config)
         elif text_config is None:
-            text_config = CONFIG_MAPPING["cohere2"](tie_word_embeddings=True)
+            text_config = CONFIG_MAPPING["cohere2"](tie_word_embeddings=tie_word_embeddings)
 
         self.text_config = text_config
+        self.tie_word_embeddings = tie_word_embeddings
+        super().__init__(**kwargs)
 
 
 __all__ = ["Cohere2VisionConfig"]

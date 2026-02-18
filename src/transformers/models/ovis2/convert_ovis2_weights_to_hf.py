@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +15,9 @@
 import argparse
 import os
 import re
+from io import BytesIO
 
-import requests
+import httpx
 import torch
 from PIL import Image
 
@@ -225,7 +225,7 @@ def load_orig_state_dict(model_name_or_path):
     """
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         trust_remote_code=True,
     ).eval()
 
@@ -358,13 +358,14 @@ def main():
 
     # Push to hub if requested
     if args.push_to_hub:
-        processor.push_to_hub(args.hub_dir, use_temp_dir=True)
-        model.push_to_hub(args.hub_dir, use_temp_dir=True)
+        model_name = args.hub_dir.split("/")[-1]
+        processor.push_to_hub(model_name)
+        model.push_to_hub(model_name)
 
     model = (
         AutoModelForImageTextToText.from_pretrained(
             args.save_dir,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
         .eval()
         .to("cuda:0")
@@ -381,7 +382,8 @@ def main():
         },
     ]
     url = "http://images.cocodataset.org/val2014/COCO_val2014_000000537955.jpg"
-    image = Image.open(requests.get(url, stream=True).raw)
+    with httpx.stream("GET", url) as response:
+        image = Image.open(BytesIO(response.read()))
     messages = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     print(messages)
 

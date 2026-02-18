@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,23 +13,23 @@
 # limitations under the License.
 """RT-DETR ResNet model configuration"""
 
-from ...configuration_utils import PretrainedConfig
+from ...backbone_utils import BackboneConfigMixin
+from ...configuration_utils import PreTrainedConfig
 from ...utils import logging
-from ...utils.backbone_utils import BackboneConfigMixin, get_aligned_output_features_output_indices
 
 
 logger = logging.get_logger(__name__)
 
 
-class RTDetrResNetConfig(BackboneConfigMixin, PretrainedConfig):
+class RTDetrResNetConfig(BackboneConfigMixin, PreTrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`RTDetrResnetBackbone`]. It is used to instantiate an
     ResNet model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of the ResNet
     [microsoft/resnet-50](https://huggingface.co/microsoft/resnet-50) architecture.
 
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
+    Configuration objects inherit from [`PreTrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PreTrainedConfig`] for more information.
 
     Args:
         num_channels (`int`, *optional*, defaults to 3):
@@ -106,9 +105,7 @@ class RTDetrResNetConfig(BackboneConfigMixin, PretrainedConfig):
         self.downsample_in_first_stage = downsample_in_first_stage
         self.downsample_in_bottleneck = downsample_in_bottleneck
         self.stage_names = ["stem"] + [f"stage{idx}" for idx in range(1, len(depths) + 1)]
-        self._out_features, self._out_indices = get_aligned_output_features_output_indices(
-            out_features=out_features, out_indices=out_indices, stage_names=self.stage_names
-        )
+        self.set_output_features_output_indices(out_indices=out_indices, out_features=out_features)
 
 
 __all__ = ["RTDetrResNetConfig"]
