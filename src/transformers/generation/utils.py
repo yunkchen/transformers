@@ -607,11 +607,16 @@ class GenerationMixin(ContinuousMixin):
         requirements for e.g. `past_key_values`). This function should work as is for most LLMs.
         """
 
-        # 1. Handle BC:
-        model_inputs = {}
-        model_inputs["cache_position"] = cache_position
+        # Instantiate our returned inputs and find correct values/names
+        model_inputs = {"cache_position": cache_position}
+        encoder_attention_mask = attention_mask if self.config.is_encoder_decoder else None
+        attention_mask = (
+            kwargs.pop("decoder_attention_mask", None) if self.config.is_encoder_decoder else attention_mask
+        )
+        attention_mask_key = "decoder_attention_mask" if self.config.is_encoder_decoder else "attention_mask"
+        position_ids_key = "decoder_position_ids" if self.config.is_encoder_decoder else "position_ids"
 
-        # 2. Generic cache-dependent input preparation
+        # 1. Generic cache-dependent input preparation
         if past_key_values is not None:
             model_inputs["past_key_values"] = past_key_values
         # We check `use_cache` below because some stateful models (like `recurrent_gemma`) expect input slicing if
@@ -627,7 +632,7 @@ class GenerationMixin(ContinuousMixin):
                 input_ids, inputs_embeds, cache_position
             )
 
-        # 3. Prepare base model inputs
+        # 2. Prepare base model inputs
         input_ids_key = "decoder_input_ids" if self.config.is_encoder_decoder else "input_ids"
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step for every prompt.
         if not self.config.is_encoder_decoder:
@@ -641,38 +646,22 @@ class GenerationMixin(ContinuousMixin):
         else:
             model_inputs[input_ids_key] = input_ids.clone(memory_format=torch.contiguous_format)
 
-        # 4. Create missing `position_ids` on the fly
-        encoder_attention_mask = attention_mask if self.config.is_encoder_decoder else None
-        attention_mask = (
-            kwargs.pop("decoder_attention_mask", None) if self.config.is_encoder_decoder else attention_mask
-        )
-        attention_mask_key = "decoder_attention_mask" if self.config.is_encoder_decoder else "attention_mask"
-        position_ids_key = "decoder_position_ids" if self.config.is_encoder_decoder else "position_ids"
-        if (
-            attention_mask is not None
-            and kwargs.get(position_ids_key) is None
-            and position_ids_key in set(inspect.signature(self.forward).parameters.keys())
-        ):
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 0)
-            kwargs[position_ids_key] = position_ids  # placed in kwargs for further processing (see below)
-
-        # 5. Slice model inputs if it's an input that should have the same length as `input_ids`
+        # 3. Slice model inputs if it's an input that should have the same length as `input_ids`
         if past_key_values is not None or use_cache:
-            current_input_length = (
+            sequence_length = (
                 model_inputs["inputs_embeds"].shape[1]
                 if model_inputs.get("inputs_embeds") is not None
                 else model_inputs[input_ids_key].shape[1]
             )
-            for model_input_name in ["position_ids", "token_type_ids", "decoder_position_ids", "cache_position"]:
+            for model_input_name in ["position_ids", "decoder_position_ids", "cache_position", "token_type_ids"]:
                 model_input = kwargs.get(model_input_name)
                 if model_input is not None:
                     # Input can be 2D or 3D, and we always slice on `seq-length` (last dim)
-                    model_input = model_input[..., -current_input_length:]
+                    model_input = model_input[..., -sequence_length:]
                     model_input = model_input.clone(memory_format=torch.contiguous_format)
                     model_inputs[model_input_name] = model_input
 
-        # 6. Create 4D attention mask is we are using a compilable cache (important for performant compiled forward
+        # 4. Create 4D attention mask is we are using a compilable cache (important for performant compiled forward
         # pass)
         if (
             isinstance(past_key_values, Cache)
@@ -707,13 +696,14 @@ class GenerationMixin(ContinuousMixin):
         if encoder_attention_mask is not None:
             model_inputs["attention_mask"] = encoder_attention_mask
 
-        # 7. Forward ALL kwargs that are uninitialized (e.g. `use_cache`).
+        # 5. Forward ALL kwargs that are uninitialized (e.g. `use_cache`).
         for key, value in kwargs.items():
             if key not in model_inputs:
                 model_inputs[key] = value
 
-        # 8. Remove unexpected `generate` inputs (TODO @joao: fix trainer and examples)
+        # 6. Remove unexpected `generate` inputs (TODO @joao: fix trainer and examples)
         model_inputs.pop("labels", None)
+
         return model_inputs
 
     def _prepare_model_inputs(
