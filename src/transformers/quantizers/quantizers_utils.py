@@ -34,8 +34,9 @@ def should_convert_module(full_name, patterns: list[str] | None = None):
     # 3. `full_name` ends with the pattern
     #    (e.g., "fc1" matches "model.decoder.layers.23.fc1").
 
-    should_not_convert = any(
-        re.match(f"{key}\\.", full_name) or re.match(f"{key}", full_name) or full_name.endswith(key)
-        for key in patterns
+    patterns_tuple = tuple(patterns)
+    should_not_convert = (
+        full_name.startswith(patterns_tuple)
+        or full_name.endswith(patterns_tuple)
     )
     return not should_not_convert

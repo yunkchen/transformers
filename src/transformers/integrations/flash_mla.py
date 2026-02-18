@@ -91,7 +91,7 @@ def flash_mla_attention_forward(
     # Fallback to flash_attention_2 when sequence length is below threshold
     # This is because flash-mla sparse attention is optimized for longer sequences
     if seq_len < FLASH_MLA_MIN_SEQ_LEN:
-        logger.debug_once(
+        logger.debug(
             f"Sequence length {seq_len} < {FLASH_MLA_MIN_SEQ_LEN}, falling back to flash_attention_2"
         )
         return flash_attention_forward(
