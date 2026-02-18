@@ -1031,10 +1031,10 @@ class GenerationMixin(ContinuousMixin):
         if (token_type_ids := model_kwargs.get("token_type_ids")) is not None:
             model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
 
-        # Position ids
+        # Position ids (2D or 3D sometimes)
         position_ids_key = "position_ids" if not is_encoder_decoder else "decoder_position_ids"
         if (position_ids := model_kwargs.get(position_ids_key)) is not None:
-            # position_ids can be either 2D or 3D sometimes - we want to expand to the same number of dims
+            # We want to expand to the same number of dims which is not always the same
             required_dim = [1] * (position_ids.dim() - 1) + [-1]
             next_position_ids = (
                 torch.arange(num_new_tokens, dtype=position_ids.dtype, device=position_ids.device).view(*required_dim)
@@ -1052,7 +1052,7 @@ class GenerationMixin(ContinuousMixin):
                 [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
             )
 
-        # Cache position
+        # Cache position (always 1D)
         if (cache_position := model_kwargs.get("cache_position")) is not None:
             next_cache_position = (
                 torch.arange(num_new_tokens, dtype=cache_position.dtype, device=cache_position.device)
