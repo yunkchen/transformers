@@ -21,7 +21,52 @@ Monkey patching allows you to replace model components globally without modifyin
 > [!WARNING]
 > **Monkey patching should be used as a last resort** when you need to change the layout and structure of a module and or its weights. For many customization and optimization needs, try using the [Attention interface](./attention_interface), [Experts interface](./experts_interface), or [Kernels registry](./kernel_doc/overview) instead. Only use monkey patching when you need structural changes that can't be achieved through custom forward implementations alone (e.g., for quantization library compatibility, fusing layers, or architectural experiments).
 
-## Registering patches
+## Quick start
+
+Here's a simple example showing how to replace a model component:
+
+```python
+from transformers import AutoModelForCausalLM
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
+from transformers.monkey_patch import register_monkey_patch_mapping
+
+
+# Define your replacement class (must inherit from nn.Module)
+class CustomGPT2Attention(GPT2Attention):
+    def forward(self, *args, **kwargs):
+        # Your custom implementation
+        print("Using custom attention!")
+        return super().forward(*args, **kwargs)
+
+
+# Register the patch globally (only applies to transformers modeling modules)
+register_monkey_patch_mapping(mapping={"GPT2Attention": CustomGPT2Attention})
+
+# Load a model - the patch is automatically applied during initialization
+model = AutoModelForCausalLM.from_pretrained("gpt2")
+
+# All GPT2Attention layers in the model are now CustomGPT2Attention instances
+print(type(model.transformer.h[0].attn))  # <class '__main__.CustomGPT2Attention'>
+```
+
+## How it works
+
+Monkey patches work through a two-step process:
+
+1. **Registration**: Call [`register_monkey_patch_mapping`] to add class replacements to a global registry.
+
+2. **Application**: Patches are automatically applied during model initialization:
+   - **`from_pretrained` / `from_config`**: Patches are **automatically** applied via an internal context manager. No additional action needed!
+   - **Manual construction** (e.g., `Model(config)`): You must use the [`apply_monkey_patches`] context manager manually.
+
+Once patches are registered, they persist and affect all subsequent model loads until you clear them with [`clear_monkey_patch_mapping`].
+
+**Important limitations**:
+
+- Only classes in `transformers` modeling modules are allowed to be patched (e.g., `GPT2Attention`, `BertEncoder`).
+- The class name you specify in the mapping (e.g., `"Qwen2MoeExperts"`) must **exactly match** the original class name as it appears in the model's source code. To find the correct name, inspect `transformers.models.<model_type>.modeling_<model_type>` (e.g., `transformers.models.bert.modeling_bert`) and look for the class you want to replace.
+
+## Global registration
 
 Use [`register_monkey_patch_mapping`] to register replacements globally:
 
@@ -50,10 +95,10 @@ To unregister patches, use [`unregister_monkey_patch_mapping`]:
 from transformers.monkey_patch import unregister_monkey_patch_mapping
 
 # Unregister a single patch
-unregister_monkey_patch_mapping(["Qwen2MoeExperts"])
+unregister_monkey_patch_mapping(class_names=["Qwen2MoeExperts"])
 
 # Unregister multiple patches at once
-unregister_monkey_patch_mapping(["Qwen2MoeExperts", "Qwen2MoeAttention"])
+unregister_monkey_patch_mapping(class_names=["Qwen2MoeExperts", "Qwen2MoeAttention"])
 ```
 
 To clear all registered patches, use [`clear_monkey_patch_mapping`]:
@@ -73,15 +118,124 @@ current_patches = get_monkey_patch_mapping()
 print(current_patches)
 ```
 
+## Manual model construction
+
+The [`apply_monkey_patches`] context manager is only needed when you're constructing models **manually** (e.g., `Model(config)`) without using `from_pretrained` or `from_config`:
+
+```python
+from transformers import BertModel, BertConfig
+from transformers.monkey_patch import register_monkey_patch_mapping, apply_monkey_patches
+
+# Register patch globally
+register_monkey_patch_mapping(mapping={"BertAttention": CustomAttention})
+
+# For manual construction, you need the context manager
+with apply_monkey_patches():
+    model = BertModel(BertConfig())  # Uses CustomAttention
+
+# Without the context manager, manual construction uses original classes
+model = BertModel(BertConfig())  # Uses BertAttention
+
+# But from_pretrained ALWAYS applies registered patches automatically
+model = BertModel.from_pretrained("bert-base-uncased")  # Uses CustomAttention (no context manager needed!)
+```
+
 ## Important notes
 
-- **Weight handling**: Monkey patching only replaces classes, not weights. If your patched class has a different weights layout, you'll need to handle [weight conversions](./weightconverter) separately to ensure compatibility with pretrained weights. See the [Usage examples](#usage-examples) below for an example of how to register weight conversion mappings alongside monkey patches.
+- **Weight handling**: Monkey patching only replaces classes, not weights. If your patched class has a different weights layout, you'll need to handle [weight conversions](./weightconverter) separately to ensure compatibility with pretrained weights. See the [Complete example](#complete-example) below for how to combine monkey patches with weight conversion mappings.
 
-- **Global effect**: Patches are applied globally to all models loaded after registration. Be cautious when registering patches that may affect multiple models.
+- **Global effect**: Patches registered with [`register_monkey_patch_mapping`] are applied globally to all models loaded after registration. Always use [`clear_monkey_patch_mapping`] to clean up when done, especially in tests, notebooks, or long-running applications.
 
-## Usage examples
+- **Class validation**: The API automatically validates that replacement classes are `nn.Module` subclasses. If you pass an invalid class, you'll get a clear error message.
 
-Here's a complete and concrete example of restructuring the experts and attention modules in `qwen2_moe` using monkey patching for optimization and quantization compatibility:
+- **Thread safety**: All patching operations are thread-safe. You can safely register, unregister, and apply patches from multiple threads.
+
+- **Exact name matching**: Class names in the mapping must exactly match the original class names as they appear in the model's source code. Case-sensitive!
+
+## Troubleshooting
+
+### My patch isn't being applied
+
+**Check class name**: Ensure the class name in your mapping exactly matches the original. For example:
+
+```python
+# ❌ Wrong - case mismatch
+register_monkey_patch_mapping(mapping={"bertattention": CustomAttention})
+
+# ✅ Correct
+register_monkey_patch_mapping(mapping={"BertAttention": CustomAttention})
+```
+
+**Verify registration**: Use [`get_monkey_patch_mapping`] to confirm your patch is registered:
+
+```python
+print(get_monkey_patch_mapping())
+# Should show: {'BertAttention': <class 'CustomAttention'>}
+```
+
+**Check model source**: Find the exact class name in the model's source:
+
+```python
+from transformers.models.bert import modeling_bert
+print(dir(modeling_bert))  # Look for the class name
+```
+
+### How do I know if my patch is working?
+
+Inspect the loaded model to verify the patch:
+
+```python
+model = AutoModelForCausalLM.from_pretrained("gpt2")
+
+# Check the type of a specific module
+print(type(model.transformer.h[0].attn))  # Should show your custom class
+
+# Or iterate through all modules
+for name, module in model.named_modules():
+    if 'attention' in name.lower():
+        print(f"{name}: {type(module)}")
+```
+
+### Weight shape mismatch errors
+
+If your patched class has different weight shapes, register a weight conversion:
+
+```python
+from transformers.conversion_mapping import register_checkpoint_conversion_mapping, WeightConverter
+
+register_checkpoint_conversion_mapping(
+    model_type="bert",
+    mapping=[WeightConverter(
+        source_patterns=["query", "key", "value"],
+        target_patterns=["qkv"],
+        operations=[Concatenate(dim=0)]
+    )],
+    overwrite=True
+)
+```
+
+### Cleaning up patches
+
+Always clean up patches when you're done to avoid affecting other code:
+
+```python
+from transformers.monkey_patch import register_monkey_patch_mapping, clear_monkey_patch_mapping
+
+try:
+    register_monkey_patch_mapping(mapping={"BertAttention": CustomAttention})
+    model = AutoModelForCausalLM.from_pretrained("bert-base-uncased")
+    # ... use model ...
+finally:
+    clear_monkey_patch_mapping()  # Always clean up
+```
+
+## Complete example
+
+Here's a comprehensive example showing how to restructure both the experts and attention modules in a Mixture-of-Experts model (`qwen2_moe`) for optimization and quantization compatibility. This demonstrates:
+
+1. Creating custom replacement classes that maintain the same interface
+2. Registering monkey patches for multiple components
+3. Handling weight conversions for the new structure
 
 ```python
 from typing import Unpack
