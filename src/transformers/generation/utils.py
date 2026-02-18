@@ -533,11 +533,8 @@ class GenerationMixin(ContinuousMixin):
         position_ids_key = "decoder_position_ids" if self.config.is_encoder_decoder else "position_ids"
         if (position_ids := kwargs.pop(position_ids_key, None)) is not None:
             model_inputs[position_ids_key] = position_ids
-
-        # TODO Cyril: this used to be asked to be sliced later, but was never in the `model_inputs`......
-        # Investigate if it's supposed to be needed and was bugged, or was never needed.....
-        # if (token_type_ids := kwargs.pop("token_type_ids", None)) is not None:
-        #     model_inputs["token_type_ids"] = token_type_ids
+        if (token_type_ids := kwargs.pop("token_type_ids", None)) is not None:
+            model_inputs["token_type_ids"] = token_type_ids
 
         # 3. Slice model inputs if it's an input that should have the same length as `input_ids`
         use_cache = kwargs.get("use_cache", getattr(self.config, "use_cache", False))
@@ -545,7 +542,7 @@ class GenerationMixin(ContinuousMixin):
         # their caching mechanism is used. To define `use_cache`, the user-defined argument takes precedence.
         if past_key_values is not None or use_cache:
             for model_input_name in [position_ids_key, "cache_position", "token_type_ids"]:
-                model_input = kwargs.get(model_input_name)
+                model_input = model_inputs.get(model_input_name)
                 if model_input is not None:
                     # Input can be 2D or 3D, and we always slice on `seq-length` (last dim)
                     model_input = model_input[..., -sequence_length:]
