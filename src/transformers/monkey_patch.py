@@ -48,7 +48,8 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
 
     Example:
         ```python
-        from transformers import AutoModelForCausalLM, register_monkey_patch_mapping
+        from transformers import AutoModelForCausalLM
+        from transformers.monkey_patch import register_monkey_patch_mapping
 
         # Define custom expert implementation
         class SequentialExperts(nn.Module):
@@ -105,7 +106,8 @@ def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
 
     Example:
         ```python
-        from transformers import AutoModelForCausalLM, register_monkey_patch_mapping, unregister_monkey_patch_mapping
+        from transformers import AutoModelForCausalLM
+        from transformers.monkey_patch import register_monkey_patch_mapping, unregister_monkey_patch_mapping
 
         # Register a patch
         register_monkey_patch_mapping(
@@ -147,7 +149,7 @@ def clear_monkey_patch_mapping() -> None:
 
     Example:
         ```python
-        from transformers import register_monkey_patch_mapping, clear_monkey_patch_mapping
+        from transformers.monkey_patch import register_monkey_patch_mapping, clear_monkey_patch_mapping
 
         # Register some patches
         register_monkey_patch_mapping(
@@ -241,8 +243,8 @@ def patch_output_recorders(model: nn.Module) -> None:
 
     Example:
         ```python
-        from transformers import AutoModelForCausalLM, register_monkey_patch_mapping
-        from transformers.monkey_patch import patch_output_recorders
+        from transformers import AutoModelForCausalLM
+        from transformers.monkey_patch import register_monkey_patch_mapping, patch_output_recorders
 
         # Register a patch
         register_monkey_patch_mapping(mapping={"Qwen2MoeExperts": CustomExperts})
