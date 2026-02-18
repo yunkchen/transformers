@@ -658,19 +658,19 @@ class GenerationMixin(ContinuousMixin):
             kwargs[position_ids_key] = position_ids  # placed in kwargs for further processing (see below)
 
         # 5. Slice model inputs if it's an input that should have the same length as `input_ids`
-        for model_input_name in ["position_ids", "token_type_ids", "decoder_position_ids"]:
-            model_input = kwargs.get(model_input_name)
-            if model_input is not None:
-                if past_key_values is not None or use_cache:
-                    current_input_length = (
-                        model_inputs["inputs_embeds"].shape[1]
-                        if model_inputs.get("inputs_embeds") is not None
-                        else model_inputs[input_ids_key].shape[1]
-                    )
+        if past_key_values is not None or use_cache:
+            current_input_length = (
+                model_inputs["inputs_embeds"].shape[1]
+                if model_inputs.get("inputs_embeds") is not None
+                else model_inputs[input_ids_key].shape[1]
+            )
+            for model_input_name in ["position_ids", "token_type_ids", "decoder_position_ids", "cache_position"]:
+                model_input = kwargs.get(model_input_name)
+                if model_input is not None:
                     # Input can be 2D or 3D, and we always slice on `seq-length` (last dim)
                     model_input = model_input[..., -current_input_length:]
                     model_input = model_input.clone(memory_format=torch.contiguous_format)
-                model_inputs[model_input_name] = model_input
+                    model_inputs[model_input_name] = model_input
 
         # 6. Create 4D attention mask is we are using a compilable cache (important for performant compiled forward
         # pass)
@@ -1014,6 +1014,10 @@ class GenerationMixin(ContinuousMixin):
         is_encoder_decoder: bool = False,
         num_new_tokens: int = 1,
     ) -> dict[str, Any]:
+        """
+        Update the model kwargs to account for the `num_new_tokens` new tokens that were just generated.
+        Note that this function never slices inputs, this is performed in `prepare_inputs_for_generation`.
+        """
         # update past_key_values keeping its naming used in model code
         for possible_cache_name in ALL_CACHE_NAMES:
             if possible_cache_name in outputs:
@@ -1024,8 +1028,6 @@ class GenerationMixin(ContinuousMixin):
                     cache_name = possible_cache_name
                 model_kwargs[cache_name] = getattr(outputs, possible_cache_name)
                 break
-
-        use_cache = model_kwargs.get("use_cache", True)
 
         # update token_type_ids with last value
         if (token_type_ids := model_kwargs.get("token_type_ids")) is not None:
@@ -1041,8 +1043,7 @@ class GenerationMixin(ContinuousMixin):
                 + position_ids[..., -1:]
                 + 1
             )
-            if not use_cache:
-                next_position_ids = torch.cat([position_ids, next_position_ids], dim=-1)
+            next_position_ids = torch.cat([position_ids, next_position_ids], dim=-1)
             model_kwargs[position_ids_key] = next_position_ids
 
         # 2D attention mask (always 2D here)
@@ -1059,8 +1060,7 @@ class GenerationMixin(ContinuousMixin):
                 + cache_position[-1]
                 + 1
             )
-            if not use_cache:
-                next_cache_position = torch.cat((cache_position, next_cache_position))
+            next_cache_position = torch.cat((cache_position, next_cache_position))
             model_kwargs["cache_position"] = next_cache_position
 
         return model_kwargs
