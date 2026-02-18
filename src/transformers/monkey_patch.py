@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
+import sys
 from contextlib import contextmanager
 
-import torch.nn as nn
+from .utils import is_torch_available, logging
+from .utils.output_capturing import OutputRecorder
 
-from .utils import logging
 
+if is_torch_available():
+    import torch.nn as nn
 
 logger = logging.get_logger(__name__)
 
@@ -28,7 +30,8 @@ _monkey_patch_mapping_cache: dict[str, type[nn.Module]] = {}
 
 def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite: bool = False) -> None:
     """
-    Register class mappings to enable automatic patching during model creation (from_pretrained and from_config).
+    Register class mappings to enable automatic patching during model creation using `from_pretrained`,
+    `from_config` or within the `apply_monkey_patches` context manager.
 
     Use this to register class replacements that will be automatically applied when loading any model.
     This is useful for quantization library compatibility, structural optimizations, and architectural
@@ -75,6 +78,41 @@ def register_monkey_patch_mapping(mapping: dict[str, type[nn.Module]], overwrite
         _monkey_patch_mapping_cache[class_name] = replacement_class
 
 
+def unregister_monkey_patch_mapping(class_names: list[str]) -> None:
+    """
+    Unregister class mappings to disable automatic patching for specified classes.
+
+    This removes specified class replacements from the global registry, preventing them from being applied
+    during model loading.
+
+    Args:
+        class_names (`List[str]`):
+            List of original class names to remove from the patch mapping (e.g., `["Qwen2MoeExperts"]`).
+
+    Example:
+        ```python
+        from transformers import AutoModelForCausalLM, register_monkey_patch_mapping, unregister_monkey_patch_mapping
+
+        # Register a patch
+        register_monkey_patch_mapping(
+            mapping={"Qwen2MoeExperts": CustomExperts}
+        )
+
+        # Unregister the patch
+        unregister_monkey_patch_mapping(["Qwen2MoeExperts"])
+
+        # The patch will no longer be applied during loading
+        model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen1.5-MoE-A2.7B")
+        ```
+    """
+    global _monkey_patch_mapping_cache
+    for class_name in class_names:
+        if class_name in _monkey_patch_mapping_cache:
+            del _monkey_patch_mapping_cache[class_name]
+        else:
+            logger.debug(f"Class '{class_name}' not found in monkey patch mapping cache. Skipping unregistration.")
+
+
 def get_monkey_patch_mapping() -> dict[str, type[nn.Module]]:
     """
     Get all registered patch mappings.
@@ -109,25 +147,30 @@ def clear_monkey_patch_mapping() -> None:
 
 
 @contextmanager
-def apply_monkey_patches(model_class: type[nn.Module]):
+def apply_monkey_patches():
     """
-    Context manager to temporarily apply all registered patches.
+    Context manager to apply registered monkey patches within a block of code.
 
-    This replaces specified classes in the model's module with registered replacements for the
-    duration of the context, then restores them to their original state.
-
-    Args:
-        model_class (`type[nn.Module]`):
-            The model class to patch (e.g., `Qwen2MoeForCausalLM`).
+    This temporarily replaces original classes with their registered replacements during the execution of the block, and restores the original classes afterward.
 
     Example:
         ```python
-        from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeForCausalLM
+        from transformers import Qwen2MoeModel, Qwen2MoeConfig
+        from transformers.monkey_patch import register_monkey_patch_mapping, apply_monkey_patches
 
-        with apply_monkey_patches(Qwen2MoeForCausalLM):
-            # Model classes are patched here
-            model = Qwen2MoeForCausalLM(config)
-        # Original classes are restored
+        # Register a patch
+        register_monkey_patch_mapping(
+            mapping={"Qwen2MoeExperts": CustomExperts}
+        )
+
+        # Apply patches within the context
+        with apply_monkey_patches():
+            # The model will use CustomExperts instead of Qwen2MoeExperts
+            model = Qwen2MoeModel(Qwen2MoeConfig())
+
+        # Outside the context, original classes are restored
+        # The model will use Qwen2MoeExperts again
+        model = Qwen2MoeModel(Qwen2MoeConfig())
         ```
     """
     mapping = get_monkey_patch_mapping()
@@ -135,19 +178,41 @@ def apply_monkey_patches(model_class: type[nn.Module]):
         yield
         return
 
-    modeling_module = importlib.import_module(model_class.__module__)
     original_classes = {}
+    for module_name, replacement_class in mapping.items():
+        for module in sys.modules.values():
+            if module.__name__.startswith("transformers") and hasattr(module, module_name):
+                original_class = getattr(module, module_name)
+                original_classes[(module.__name__, module_name)] = original_class
+                setattr(module, module_name, replacement_class)
 
-    try:
-        for module_name, replacement_class in mapping.items():
-            if hasattr(modeling_module, module_name):
-                original_classes[module_name] = getattr(modeling_module, module_name)
-                setattr(modeling_module, module_name, replacement_class)
-            else:
-                logger.debug(f"Skipping patch for '{module_name}': not found in module '{modeling_module.__name__}'.")
+    yield
 
-        yield
+    for (module_name, class_name), original_class in original_classes.items():
+        module = sys.modules[module_name]
+        setattr(module, class_name, original_class)
 
-    finally:
-        for module_name, original_class in original_classes.items():
-            setattr(modeling_module, module_name, original_class)
+
+# _can_record_outputs is a class attribute so patching and unpatching it in the class won't work
+# since the model instance will still reference the original class's _can_record_outputs.
+def patch_output_recorders(model: nn.Module) -> None:
+    """
+    Patch the model instance's output recorders to use the registered replacement classes.
+
+    Args:
+        model (`nn.Module`):
+            The model instance whose output recorders should be patched.
+    """
+
+    mapping = get_monkey_patch_mapping()
+    if not mapping:
+        return
+
+    for module_name, replacement_class in mapping.items():
+        for submodule in model.modules():
+            if hasattr(submodule, "_can_record_outputs"):
+                for output, recorder in submodule._can_record_outputs.items():
+                    if isinstance(recorder, OutputRecorder) and recorder.target_class.__name__ == module_name:
+                        recorder.target_class = replacement_class
+                    elif isinstance(recorder, type) and recorder.__name__ == module_name:
+                        submodule._can_record_outputs[output] = replacement_class

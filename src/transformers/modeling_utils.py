@@ -86,7 +86,7 @@ from .integrations.tensor_parallel import (
 from .loss.loss_utils import LOSS_MAPPING
 from .modeling_flash_attention_utils import lazy_import_flash_attention, lazy_import_paged_flash_attention
 from .modeling_rope_utils import ROPE_INIT_FUNCTIONS
-from .monkey_patch import apply_monkey_patches
+from .monkey_patch import apply_monkey_patches, patch_output_recorders
 from .pytorch_utils import id_tensor_storage
 from .quantizers import HfQuantizer
 from .quantizers.auto import get_hf_quantizer
@@ -1458,7 +1458,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         if "experts_implementation" in kwargs:
             config._experts_implementation = kwargs.pop("experts_implementation")
 
-        init_contexts = [apply_monkey_patches(cls)]
+        init_contexts = [apply_monkey_patches()]
         if dtype is not None:
             init_contexts.append(local_torch_dtype(dtype, cls.__name__))
 
@@ -1473,6 +1473,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         # Instantiate the model
         with ContextManagers(init_contexts):
             model = cls(config, **kwargs)
+            patch_output_recorders(model)
 
         return model
 
@@ -3552,7 +3553,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
     @classmethod
     def get_init_context(cls, dtype: torch.dtype, is_quantized: bool, _is_ds_init_called: bool):
         # Need to instantiate with correct dtype
-        init_contexts = [local_torch_dtype(dtype, cls.__name__), init.no_tie_weights(), apply_monkey_patches(cls)]
+        init_contexts = [local_torch_dtype(dtype, cls.__name__), init.no_tie_weights(), apply_monkey_patches()]
         if is_deepspeed_zero3_enabled():
             import deepspeed
 
@@ -4029,6 +4030,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
         with ContextManagers(model_init_context):
             model = cls(config, *model_args, **model_kwargs)
+            patch_output_recorders(model)
 
             if hf_quantizer is not None:  # replace module with quantized modules (does not touch weights)
                 hf_quantizer.preprocess_model(
