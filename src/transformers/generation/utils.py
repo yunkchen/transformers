@@ -562,13 +562,6 @@ class GenerationMixin(ContinuousMixin):
             and attention_mask is not None
             and attention_mask.ndim == 2
         ):
-            if not self.config.is_encoder_decoder and model_inputs["inputs_embeds"] is not None:
-                batch_size, sequence_length, _ = model_inputs["inputs_embeds"].shape
-            else:
-                batch_size, sequence_length = model_inputs[input_ids_key].shape[:2]
-
-            token_type_ids = model_inputs.get("token_type_ids")
-            position_ids = model_inputs.get(position_ids_key)
             # Some models may overwrite the general one
             causal_mask_creation_function = getattr(self, "create_masks_for_generate", create_masks_for_generate)
             attention_mask = causal_mask_creation_function(
@@ -576,10 +569,10 @@ class GenerationMixin(ContinuousMixin):
                 # we only need batch size, seq_length and dtype here - we don't care about the values of the embeddings
                 inputs_embeds=torch.empty((batch_size, sequence_length), dtype=self.dtype),
                 attention_mask=attention_mask,
-                cache_position=cache_position,
-                past_key_values=past_key_values,
-                position_ids=position_ids,
-                token_type_ids=token_type_ids,
+                cache_position=model_inputs.get("cache_position"),
+                past_key_values=model_inputs.get("past_key_values"),
+                position_ids=model_inputs.get(position_ids_key),
+                token_type_ids=model_inputs.get("token_type_ids"),
                 is_first_iteration=is_first_iteration,
             )
 
