@@ -834,9 +834,7 @@ class GenerationMixin(ContinuousMixin):
             if (cache := model_kwargs.get("past_key_values")) is not None:
                 past_length = cache.get_seq_length()
 
-            position_ids = torch.arange(
-                past_length, seq_length + past_length, dtype=torch.long, device=inputs_tensor.device
-            )
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=inputs_tensor.device) + past_length
             position_ids = position_ids.unsqueeze(0)
         return position_ids
 
@@ -1030,31 +1028,41 @@ class GenerationMixin(ContinuousMixin):
         use_cache = model_kwargs.get("use_cache", True)
 
         # update token_type_ids with last value
-        if "token_type_ids" in model_kwargs:
-            token_type_ids = model_kwargs["token_type_ids"]
+        if (token_type_ids := model_kwargs.get("token_type_ids")) is not None:
             model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
 
+        # Position ids
         position_ids_key = "position_ids" if not is_encoder_decoder else "decoder_position_ids"
         if (position_ids := model_kwargs.get(position_ids_key)) is not None:
-            next_position_ids = position_ids[..., -1:] + num_new_tokens
+            # position_ids can be either 2D or 3D sometimes - we want to expand to the same number of dims
+            required_dim = [1] * (position_ids.dim() - 1) + [-1]
+            next_position_ids = (
+                torch.arange(num_new_tokens, dtype=position_ids.dtype, device=position_ids.device).view(*required_dim)
+                + position_ids[..., -1:]
+                + 1
+            )
             if not use_cache:
                 next_position_ids = torch.cat([position_ids, next_position_ids], dim=-1)
             model_kwargs[position_ids_key] = next_position_ids
 
+        # 2D attention mask (always 2D here)
         attention_mask_key = "attention_mask" if not is_encoder_decoder else "decoder_attention_mask"
         if (attention_mask := model_kwargs.get(attention_mask_key)) is not None:
             model_kwargs[attention_mask_key] = torch.cat(
                 [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
             )
 
-        if use_cache:
-            model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + num_new_tokens
-        else:
-            past_positions = model_kwargs.pop("cache_position")
-            new_positions = torch.arange(
-                past_positions[-1] + 1, past_positions[-1] + num_new_tokens + 1, dtype=past_positions.dtype
-            ).to(past_positions.device)
-            model_kwargs["cache_position"] = torch.cat((past_positions, new_positions))
+        # Cache position
+        if (cache_position := model_kwargs.get("cache_position")) is not None:
+            next_cache_position = (
+                torch.arange(num_new_tokens, dtype=cache_position.dtype, device=cache_position.device)
+                + cache_position[-1]
+                + 1
+            )
+            if not use_cache:
+                next_cache_position = torch.cat((cache_position, next_cache_position))
+            model_kwargs["cache_position"] = next_cache_position
+
         return model_kwargs
 
     def _get_candidate_generator(
