@@ -3739,7 +3739,7 @@ class GenerationMixin(ContinuousMixin):
                 model_kwargs["inputs_embeds"] = model_kwargs["inputs_embeds"][:, past_length:, :]
             # When inputs_embeds are present, input_ids may be in the model_kwargs as well
             if "input_ids" in model_kwargs:
-                model_kwargs["input_ids"] = model_kwargs["input_ids"][:, past_length:, :]
+                model_kwargs["input_ids"] = model_kwargs["input_ids"][:, past_length:]
 
         # Usual prefill
         if generation_config.prefill_chunk_size is None:
