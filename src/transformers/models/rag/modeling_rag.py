@@ -1149,11 +1149,6 @@ class RagTokenForGeneration(RagPreTrainedModel, GenerationMixin):
         **kwargs,
     ):
         # Overwritten -- `do_marginalize` is explicitly set in the output
-
-        if past_key_values is not None:
-            # if past is defined use only last decoder_input_ids
-            decoder_input_ids = decoder_input_ids[:, -1:]
-
         return {
             "input_ids": None,
             "encoder_outputs": encoder_outputs,
