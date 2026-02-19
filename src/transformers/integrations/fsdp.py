@@ -125,7 +125,7 @@ def initialize_fsdp(
             device_map = device_type or {}
 
         fsdp_size = dist.get_world_size()
-        device_mesh = torch.distributed.init_device_mesh(fsdp_device.type, (fsdp_size,))
+        device_mesh = torch.distributed.init_device_mesh(fsdp_device.type, (fsdp_size,), mesh_dim_names=("dp_shard",))
     else:
         # Use provided device mesh
         if device_mesh.ndim > 1:
@@ -161,9 +161,9 @@ def get_transformer_block_classes(model):
 
     for module in model.modules():
         class_name = module.__class__.__name__
-        # Check if the module class name contains any of the block patterns
+        # Use endswith to avoid false positives (e.g. "Layer" matching "LayerNorm")
         for block_name in block_names:
-            if block_name in class_name:
+            if class_name.endswith(block_name):
                 block_classes.add(type(module))
                 break
 
