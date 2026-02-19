@@ -170,13 +170,13 @@ def _grouped_mm_fallback(input: torch.Tensor, weight: torch.Tensor, offs: torch.
     Returns:
         `torch.Tensor`: Output of shape (S, output_dim).
     """
-    output = torch.zeros(input.size(0), weight.size(2), device=input.device, dtype=input.dtype)
+    output = torch.zeros(input.size(0), weight.size(2), device=input.device, dtype=input.dtype)  # (S, output_dim)
     for i in range(weight.size(0)):
         start = offs[i - 1] if i > 0 else 0
         end = offs[i]
         if start >= end:
             continue
-        output[start:end] = torch.matmul(input[start:end], weight[i])
+        torch.mm(input[start:end], weight[i], out=output[start:end])
     return output
 
 
@@ -205,8 +205,8 @@ def _grouped_mm_fallback_backward(ctx, grad_output):
         end = ctx.offs[i]
         if start >= end:
             continue
-        grad_input[start:end] = torch.matmul(grad_output[start:end], weight[i].mT)
-        grad_weight[i] = torch.matmul(input[start:end].mT, grad_output[start:end])
+        torch.mm(grad_output[start:end], weight[i].T, out=grad_input[start:end])
+        torch.mm(input[start:end].T, grad_output[start:end], out=grad_weight[i])
     return grad_input, grad_weight, None
 
 
