@@ -549,11 +549,11 @@ class GenerationMixin(ContinuousMixin):
 
         # 4. Create 4D attention mask is we are using a compilable cache (important for performant compiled forward
         # pass)
+        encoder_attention_mask = attention_mask if self.config.is_encoder_decoder else None
         attention_mask_key = "decoder_attention_mask" if self.config.is_encoder_decoder else "attention_mask"
         attention_mask = (
             kwargs.pop("decoder_attention_mask", None) if self.config.is_encoder_decoder else attention_mask
         )
-        encoder_attention_mask = attention_mask if self.config.is_encoder_decoder else None
         if (
             isinstance(past_key_values, Cache)
             and past_key_values.is_compileable
