@@ -24,7 +24,7 @@ from ..siglip import SiglipVisionConfig
 
 class PI0Config(PreTrainedConfig):
     r"""
-    Configuration class for the PI0 model family (PI0 and PI0.5).
+    Configuration class for PI0.
 
     PI0 is a robot action prediction model that combines a PaliGemma VLM backbone
     with an action expert Gemma model. It uses flow matching for continuous action generation.
@@ -36,9 +36,6 @@ class PI0Config(PreTrainedConfig):
             Configuration for the language model (GemmaModel).
         expert_config (`dict`, *optional*):
             Configuration for the action expert (GemmaModel). Defaults to a Gemma 300M variant.
-        use_adarms (`bool`, *optional*, defaults to `False`):
-            Whether to use Adaptive RMS normalization (PI0.5 mode). When True, the expert model
-            uses AdaRMSNorm layers conditioned on a time embedding instead of state+action+time fusion.
         chunk_size (`int`, *optional*, defaults to 50):
             Number of action steps to predict per chunk.
         max_state_dim (`int`, *optional*, defaults to 32):
@@ -90,7 +87,6 @@ class PI0Config(PreTrainedConfig):
         projection_dim=2048,
         hidden_size=2048,
         tie_word_embeddings: bool | None = True,
-        use_adarms=False,
         chunk_size=50,
         max_state_dim=32,
         max_action_dim=32,
@@ -159,7 +155,6 @@ class PI0Config(PreTrainedConfig):
         self.vision_config.projection_dim = projection_dim
         super().__init__(**kwargs)
 
-        self.use_adarms = use_adarms
         self.chunk_size = chunk_size
         self.max_state_dim = max_state_dim
         self.max_action_dim = max_action_dim
@@ -187,6 +182,9 @@ class PI0Config(PreTrainedConfig):
             )
         else:
             self.expert_config = expert_config
+
+        self.expert_config.is_causal = False
+        self.expert_config.use_bidirectional_attention = True
 
 
 __all__ = ["PI0Config"]
