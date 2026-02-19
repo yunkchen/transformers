@@ -2717,14 +2717,13 @@ class GenerationMixin(ContinuousMixin):
             else self.__call__
         )
 
-        # Assisted generation completes the prefill stage in candidate generator so that
-        # we don't have several `prefill` calls in one generation loop. Skip `_prefill` for assistants
-        if not generation_config.is_assistant:
-            outputs = self._prefill(input_ids, generation_config, model_kwargs)
-            prefill_consumed = False
-        else:
-            model_kwargs = self._get_initial_cache_position(input_ids.shape[1], input_ids.device, model_kwargs)
-            prefill_consumed = True
+        prefill_consumed = False
+        outputs = self._prefill(
+            input_ids,
+            generation_config,
+            model_kwargs,
+            is_first_iteration=not generation_config.is_assistant,
+        )
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             if prefill_consumed:
@@ -3204,14 +3203,13 @@ class GenerationMixin(ContinuousMixin):
         beam_indices = running_beam_indices.detach().clone()
 
         flat_running_sequences = input_ids
-        # Assisted generation completes the prefill stage in candidate generator so that
-        # we don't have several `prefill` calls in one generation loop. Skip `_prefill` for assistants
-        if not generation_config.is_assistant:
-            model_outputs = self._prefill(input_ids, generation_config, model_kwargs)
-            prefill_consumed = False
-        else:
-            model_kwargs = self._get_initial_cache_position(input_ids.shape[1], input_ids.device, model_kwargs)
-            prefill_consumed = True
+        prefill_consumed = False
+        model_outputs = self._prefill(
+            input_ids,
+            generation_config,
+            model_kwargs,
+            is_first_iteration=not generation_config.is_assistant,
+        )
 
         # 4. run the generation loop
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
@@ -3519,7 +3517,7 @@ class GenerationMixin(ContinuousMixin):
             cur_len = input_ids.shape[1]
 
             #  1. Fetch candidate sequences from a `CandidateGenerator` and move to the correct device
-            candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids, is_first_iteration)
+            candidate_input_ids, candidate_logits = candidate_generator.get_candidates(input_ids)
             candidate_input_ids = candidate_input_ids.to(self.device)
             if candidate_logits is not None:
                 candidate_logits = candidate_logits.to(self.device)
@@ -3540,6 +3538,15 @@ class GenerationMixin(ContinuousMixin):
             if (position_ids := candidate_kwargs.get("position_ids")) is not None and candidate_length > 0:
                 new_length = candidate_length + position_ids.shape[-1]
                 candidate_kwargs = _prepare_position_ids(candidate_kwargs, new_length, self.config.is_encoder_decoder)
+
+            if "cache_position" in candidate_kwargs:
+                candidate_kwargs["cache_position"] = torch.cat(
+                    (
+                        candidate_kwargs["cache_position"],
+                        torch.arange(candidate_length, device=input_ids.device, dtype=torch.long) + cur_len,
+                    ),
+                    dim=0,
+                )
 
             new_candidate_input_ids = (
                 candidate_input_ids if is_first_iteration else candidate_input_ids[:, -candidate_length - 1 :]
@@ -3707,22 +3714,39 @@ class GenerationMixin(ContinuousMixin):
             return input_ids
 
     # TODO: v5.1: make public once API stabilized
-    def _prefill(self, input_ids: torch.LongTensor, generation_config: GenerationConfig, model_kwargs):
+    def _prefill(
+        self,
+        input_ids: torch.LongTensor,
+        generation_config: GenerationConfig,
+        model_kwargs: dict,
+        is_first_iteration: bool = True,
+    ):
+        """
+        Perform the prefill stage of generation.
+
+        Note that usually, the prefill stage is always the first iteration of a new input batch, and thus multimodal inputs etc
+        should be treated as if it's the first iteration. However, for assisted decoding, assistants call `generate`
+        several time in a row for a same batch of inputs, so we need to pass `is_first_iteration` here for such cases.
+        """
         # When restarting from previous cache, the `input_ids` or `inputs_embeds` are always the FULL sequence,
         # including previous inputs, so slice them to get only new tokens
         if (cache := model_kwargs.get("past_key_values")) is not None:
-            input_ids = input_ids[:, cache.get_seq_length() :]
+            past_length = cache.get_seq_length()
+            input_ids = input_ids[:, past_length:]
             if "inputs_embeds" in model_kwargs:
-                model_kwargs["inputs_embeds"] = model_kwargs["inputs_embeds"][:, cache.get_seq_length() :, :]
+                model_kwargs["inputs_embeds"] = model_kwargs["inputs_embeds"][:, past_length:, :]
             # When inputs_embeds are present, input_ids may be in the model_kwargs as well
             if "input_ids" in model_kwargs:
-                model_kwargs["input_ids"] = model_kwargs["input_ids"][:, cache.get_seq_length() :, :]
+                model_kwargs["input_ids"] = model_kwargs["input_ids"][:, past_length:, :]
 
         # Usual prefill
         if generation_config.prefill_chunk_size is None:
             model_kwargs = self._get_initial_cache_position(input_ids.shape[1], input_ids.device, model_kwargs)
-            model_inputs = self.prepare_inputs_for_generation(input_ids, is_first_iteration=True, **model_kwargs)
+            model_inputs = self.prepare_inputs_for_generation(
+                input_ids, is_first_iteration=is_first_iteration, **model_kwargs
+            )
             return self(**model_inputs, return_dict=True)
+
         # Chunked prefill (for very large contexts)
         else:
             # Even if we are not compiling the forward, flex is always compiled when used. With chunked prefill, we may
@@ -3758,7 +3782,7 @@ class GenerationMixin(ContinuousMixin):
                 past_length = current_length
 
             model_kwargs["attention_mask"] = attention_mask
-            model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + 1
+            _ = model_kwargs.pop("cache_position", None)
             _ = model_kwargs.pop("position_ids", None)
             # Latest outputs contain next token logits
             return outputs
