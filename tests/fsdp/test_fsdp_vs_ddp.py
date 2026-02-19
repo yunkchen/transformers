@@ -40,9 +40,13 @@ logger = logging.getLogger("transformers.training_test")
 
 
 if is_torch_available():
+    import tempfile
+
     import torch
     import torch.distributed as dist
+    import torch.distributed.checkpoint as dcp
     import torch.multiprocessing as mp
+    from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
     from torch.distributed.tensor import DTensor
     from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -298,3 +302,92 @@ def test_fsdp2_vs_ddp(nproc_per_node, dtype):
     """20-step Adam: compare per-step losses, grad norms, and final weights."""
     skip_if_insufficient_devices(nproc_per_node)
     init_distributed(world_size=nproc_per_node)(_test_fsdp2_vs_ddp_impl)(dtype)
+
+
+# =============================================================================
+# FSDP2 save/load checkpoint test
+# =============================================================================
+
+def _test_fsdp2_save_load_impl(rank):
+    """Train FSDP2 model, save via DCP, load into fresh model, compare state dicts."""
+    init_test_logger()
+
+    device = torch.device(f"cuda:{rank}")
+    config = AutoConfig.from_pretrained(MODEL_NAME)
+
+    # Train for a few steps so state is non-trivial
+    batches = create_deterministic_data(BATCH_SIZE, SEQ_LEN, config.vocab_size, device, seed=SEED)
+    batches = batches * NUM_STEPS
+
+    device_map, device_mesh, _ = initialize_fsdp(fsdp_plan="auto")
+
+    set_seed(SEED)
+    model = AutoModelForCausalLM.from_config(config).to(device_map)
+    model = apply_fsdp2(model, device_mesh, fsdp_plan="auto")
+    model.train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    for input_ids, labels in batches:
+        optimizer.zero_grad()
+        output = model(input_ids=input_ids, labels=labels)
+        output.loss.backward()
+        optimizer.step()
+
+    # Gather full state dict before saving
+    state_dict_before = gather_fsdp2_state_dict(model)
+
+    # Save checkpoint via DCP
+    # Use a shared tmpdir across all ranks: create on rank 0, broadcast to others
+    if rank == 0:
+        tmpdir_obj = tempfile.TemporaryDirectory()
+        tmpdir = tmpdir_obj.name
+        tmpdir_list = [tmpdir]
+    else:
+        tmpdir_list = [None]
+    dist.broadcast_object_list(tmpdir_list, src=0)
+    tmpdir = tmpdir_list[0]
+
+    try:
+        model_state_dict, optimizer_state_dict = get_state_dict(model, optimizer)
+        dcp.save({"model": model_state_dict, "optim": optimizer_state_dict}, checkpoint_id=tmpdir)
+        dist.barrier()
+
+        # Create a fresh FSDP2 model + optimizer and load the checkpoint
+        set_seed(SEED)
+        new_model = AutoModelForCausalLM.from_config(config).to(device_map)
+        new_model = apply_fsdp2(new_model, device_mesh, fsdp_plan="auto")
+        new_optimizer = torch.optim.Adam(new_model.parameters(), lr=LR)
+
+        new_model_state_dict, new_optimizer_state_dict = get_state_dict(new_model, new_optimizer)
+        dcp.load({"model": new_model_state_dict, "optim": new_optimizer_state_dict}, checkpoint_id=tmpdir)
+        set_state_dict(new_model, new_optimizer, model_state_dict=new_model_state_dict, optim_state_dict=new_optimizer_state_dict)
+        dist.barrier()
+    finally:
+        if rank == 0:
+            tmpdir_obj.cleanup()
+
+    # Gather full state dict after loading
+    state_dict_after = gather_fsdp2_state_dict(new_model)
+
+    # Compare model weights
+    for key in state_dict_before:
+        assert key in state_dict_after, f"Key {key} missing after load"
+        torch.testing.assert_close(
+            state_dict_before[key],
+            state_dict_after[key],
+            rtol=0,
+            atol=0,
+            msg=f"Weight mismatch for {key} after save/load",
+        )
+
+    if rank == 0:
+        logger.info(f"FSDP2 save/load test passed: all {len(state_dict_before)} parameters match exactly.")
+
+
+@pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
+@require_fsdp
+@require_torch_multi_accelerator
+def test_fsdp2_save_load(nproc_per_node):
+    """Save FSDP2 checkpoint via DCP, load into fresh model, verify exact match."""
+    skip_if_insufficient_devices(nproc_per_node)
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_save_load_impl)()
