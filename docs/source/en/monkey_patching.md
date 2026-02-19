@@ -101,9 +101,6 @@ register_monkey_patch_mapping(
     mapping={".*Attention": CustomAttention}
 )
 
-# This will replace: BertAttention, GPT2Attention, T5Attention, etc.
-model = AutoModelForCausalLM.from_pretrained("bert-base-uncased")
-
 # More examples
 register_monkey_patch_mapping(
     mapping={
@@ -114,6 +111,9 @@ register_monkey_patch_mapping(
 ```
 
 **Important**: Exact matches take precedence over patterns. If you register both `"BertAttention"` and `".*Attention"`, classes named `BertAttention` will use the exact-match replacement, while other matching classes will use the pattern-match replacement.
+
+> [!WARNING]
+> **Regex patterns can silently break models.** A broad pattern like `".*Attention"` will match *every* class whose name contains "Attention" — including container classes that wrap the attention you actually want to replace. For example, BERT has three attention-related classes: `BertSelfAttention` and `BertCrossAttention` (the inner attention implementations) and `BertAttention` (an outer module that *contains* one of those inner classes). Patching all three with the same custom attention layer produces a broken model because the outer `BertAttention` no longer wraps the inner one — it *is* one, eliminating expected sub-modules like `self` and `output`. Prefer narrow patterns (e.g., `".*SelfAttention$"`) or exact class names to avoid unintended matches.
 
 To unregister patches, use [`unregister_monkey_patch_mapping`]:
 
@@ -165,8 +165,8 @@ with apply_monkey_patches():
 # Without the context manager, manual construction uses original classes
 model = BertModel(BertConfig())  # Uses BertAttention
 
-# But from_pretrained ALWAYS applies registered patches automatically
-model = BertModel.from_pretrained("bert-base-uncased")  # Uses CustomAttention (no context manager needed!)
+# But from_pretrained and from_config will always apply registered patches
+model = BertModel.from_pretrained("bert-base-uncased")  # Uses CustomAttention 
 ```
 
 ## Important notes
@@ -231,15 +231,27 @@ If your patched class has different weight shapes, register a weight conversion:
 
 ```python
 from transformers.conversion_mapping import register_checkpoint_conversion_mapping, WeightConverter
+from transformers.monkey_patch import register_monkey_patch_mapping
+
+register_monkey_patch_mapping(
+    mapping={
+        "BertSelfAttention": BertFusedSelfAttention,
+        "BertCrossAttention": BertFusedCrossAttention,
+    }
+)
 
 register_checkpoint_conversion_mapping(
     model_type="bert",
-    mapping=[WeightConverter(
-        source_patterns=["query", "key", "value"],
-        target_patterns=["qkv"],
-        operations=[Concatenate(dim=0)]
-    )],
-    overwrite=True
+    mapping=[
+        WeightConverter(
+            source_patterns=["query", "key", "value"],
+            target_patterns=["qkv"],
+            operations=[
+                Concatenate(dim=0),
+            ],
+        )
+    ],
+    overwrite=True,
 )
 ```
 
@@ -251,8 +263,8 @@ Always clean up patches when you're done to avoid affecting other code:
 from transformers.monkey_patch import register_monkey_patch_mapping, clear_monkey_patch_mapping
 
 try:
-    register_monkey_patch_mapping(mapping={"BertAttention": CustomAttention})
-    model = AutoModelForCausalLM.from_pretrained("bert-base-uncased")
+    register_monkey_patch_mapping(mapping={"LlamaAttention": CustomAttention})
+    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
     # ... use model ...
 finally:
     clear_monkey_patch_mapping()  # Always clean up
