@@ -700,6 +700,8 @@ class GenerationMixin(ContinuousMixin):
 
         if (attention_mask := model_kwargs.get("attention_mask")) is not None:
             position_ids = attention_mask.long().cumsum(-1) - 1
+            # We need this as otherwise padding tokens appear as -1 in position
+            position_ids = position_ids.masked_fill(attention_mask == 0, 0)
         else:
             past_length = 0
             if (cache := model_kwargs.get("past_key_values")) is not None:

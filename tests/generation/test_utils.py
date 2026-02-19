@@ -2287,14 +2287,10 @@ class GenerationTesterMixin:
             out_wo_positions = model.generate(**inputs_dict, max_new_tokens=5, use_cache=True, do_sample=False)
 
             # infer position ids from attn mask and generate again
-            if "attention_mask" in inputs_dict:
-                attention_mask = inputs_dict["attention_mask"]
-                position_ids = attention_mask.long().cumsum(-1) - 1
-                position_ids = position_ids.masked_fill(attention_mask == 0, 0)
-                position_ids = position_ids[..., -seq_length:].view(-1, seq_length)
-            else:
-                position_ids = torch.arange(0, seq_length, dtype=torch.long, device=torch_device)
-                position_ids = position_ids.unsqueeze(0)
+            attention_mask = inputs_dict["attention_mask"]
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids = position_ids.masked_fill(attention_mask == 0, 0)
+            position_ids = position_ids[..., -seq_length:].view(-1, seq_length)
 
             out_w_positions = model.generate(
                 **inputs_dict, position_ids=position_ids, max_new_tokens=5, use_cache=True, do_sample=False
