@@ -508,23 +508,21 @@ class GenerationMixin(ContinuousMixin):
         See the forward pass in the model documentation for expected arguments (different models might have different
         requirements for e.g. `past_key_values`). This function should work as is for most LLMs.
         """
-
-        # input_ids are the source of truth for input shapes: they are always sliced correctly already
-        batch_size, sequence_length = input_ids.shape
         # Instantiate output
         model_inputs = {}
 
         # 1. Prepare base model inputs
+        # input_ids/input_embeds are the source of truth for input shapes: they are always sliced correctly already
         input_ids_key = "decoder_input_ids" if self.config.is_encoder_decoder else "input_ids"
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step for every prompt.
         if not self.config.is_encoder_decoder and inputs_embeds is not None and is_first_iteration:
             model_inputs[input_ids_key] = None
-            model_inputs["inputs_embeds"] = inputs_embeds[:, -sequence_length:, :].clone(
-                memory_format=torch.contiguous_format
-            )
+            model_inputs["inputs_embeds"] = inputs_embeds.clone(memory_format=torch.contiguous_format)
+            batch_size, sequence_length = inputs_embeds.shape[:2]
         else:
             # `clone` calls in this function ensure a consistent stride. See #32227
             model_inputs[input_ids_key] = input_ids.clone(memory_format=torch.contiguous_format)
+            batch_size, sequence_length = input_ids.shape
 
         # 2. Add important inputs
         model_inputs["cache_position"] = cache_position
@@ -611,8 +609,6 @@ class GenerationMixin(ContinuousMixin):
             input_name = self.encoder.main_input_name
         else:
             input_name = self.main_input_name
-
-        model_kwargs = {k: v for k, v in model_kwargs.items() if v is not None or k != input_name}
 
         # 2. check whether model_input_name is passed as kwarg
         # if yes and `inputs` is None use kwarg inputs
@@ -704,13 +700,12 @@ class GenerationMixin(ContinuousMixin):
 
         if (attention_mask := model_kwargs.get("attention_mask")) is not None:
             position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids = position_ids.masked_fill(attention_mask == 0, 0)
         else:
             past_length = 0
             if (cache := model_kwargs.get("past_key_values")) is not None:
                 past_length = cache.get_seq_length()
 
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=inputs_tensor.device) + past_length
+            position_ids = torch.arange(seq_length + past_length, dtype=torch.long, device=inputs_tensor.device)
             position_ids = position_ids.unsqueeze(0)
         return position_ids
 
@@ -1717,28 +1712,25 @@ class GenerationMixin(ContinuousMixin):
         # `torch.compile`-friendly `torch.arange` from a shape -- the lines below are equivalent to `torch.arange`
         if "cache_position" in model_kwargs and model_kwargs["cache_position"] is not None:
             return model_kwargs
+
         if "inputs_embeds" in model_kwargs and not self.config.is_encoder_decoder:
-            cache_position = torch.ones_like(model_kwargs["inputs_embeds"][0, :, 0], dtype=torch.int64).cumsum(0) - 1
+            inputs_embeds = model_kwargs["inputs_embeds"]
+            seq_length, device = inputs_embeds.shape[1], inputs_embeds.device
         elif "decoder_inputs_embeds" in model_kwargs and self.config.is_encoder_decoder:
-            cache_position = (
-                torch.ones_like(model_kwargs["decoder_inputs_embeds"][0, :, 0], dtype=torch.int64).cumsum(0) - 1
-            )
-        else:
-            cache_position = torch.ones(seq_length, dtype=torch.int64, device=device).cumsum(0) - 1
+            decoder_inputs_embeds = model_kwargs["decoder_inputs_embeds"]
+            seq_length, device = decoder_inputs_embeds.shape[1], decoder_inputs_embeds.device
 
         past_length = 0
-        if model_kwargs.get("past_key_values") is not None:
-            cache = model_kwargs["past_key_values"]
-            past_length = 0
+        if (cache := model_kwargs.get("past_key_values")) is not None:
             # Support for BC tuple cache format
             if isinstance(cache, tuple):
                 past_length = cache[0][0].shape[2]
             elif hasattr(cache, "get_seq_length"):
                 past_length = cache.get_seq_length()
 
-            cache_position = cache_position[past_length:]
-
+        cache_position = torch.ones(seq_length + past_length, dtype=torch.int64, device=device).cumsum(0) - 1
         model_kwargs["cache_position"] = cache_position
+
         return model_kwargs
 
     def _prepare_static_cache(
@@ -3716,11 +3708,23 @@ class GenerationMixin(ContinuousMixin):
 
     # TODO: v5.1: make public once API stabilized
     def _prefill(self, input_ids: torch.LongTensor, generation_config: GenerationConfig, model_kwargs):
+        # When restarting from previous cache, the `input_ids` or `inputs_embeds` are always the FULL sequence,
+        # including previous inputs, so slice them to get only new tokens
+        if (cache := model_kwargs.get("past_key_values")) is not None:
+            input_ids = input_ids[:, cache.get_seq_length() :]
+            if "inputs_embeds" in model_kwargs:
+                model_kwargs["inputs_embeds"] = model_kwargs["inputs_embeds"][:, cache.get_seq_length() :, :]
+            # When inputs_embeds are present, input_ids may be in the model_kwargs as well
+            if "input_ids" in model_kwargs:
+                model_kwargs["input_ids"] = model_kwargs["input_ids"][:, cache.get_seq_length() :, :]
+
+        # Usual prefill
         if generation_config.prefill_chunk_size is None:
             model_kwargs = self._get_initial_cache_position(input_ids.shape[1], input_ids.device, model_kwargs)
             model_inputs = self.prepare_inputs_for_generation(input_ids, is_first_iteration=True, **model_kwargs)
             return self(**model_inputs, return_dict=True)
-        else:  # Chunked prefill
+        # Chunked prefill (for very large contexts)
+        else:
             # Even if we are not compiling the forward, flex is always compiled when used. With chunked prefill, we may
             # end up needing just a bit more graphs than the default (which is 8). Doing this avoids very cryptic warnings
             torch._dynamo.config.cache_size_limit = 64
