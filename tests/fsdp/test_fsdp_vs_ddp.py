@@ -108,6 +108,32 @@ NUM_STEPS = 20
 LR = 3e-4
 SEED = 42
 
+def log_comparison_table(title, ddp_vals, fsdp_vals):
+    """Log a side-by-side comparison table for DDP vs FSDP2 values."""
+    C = Colors
+    SEP = f"{C.DIM}|{C.RESET}"
+    ROW = f"  {C.DIM}{'─' * 52}{C.RESET}"
+
+    logger.info(f"  {C.BOLD}{title}{C.RESET}")
+    logger.info(ROW)
+    logger.info(
+        f"  {C.DIM}{'step':>4}{C.RESET}  "
+        f"{SEP}  {C.BLUE}{C.BOLD}{'DDP':^14}{C.RESET}  "
+        f"{SEP}  {C.MAGENTA}{C.BOLD}{'FSDP2':^14}{C.RESET}  "
+        f"{SEP}  {C.DIM}{'diff':^10}{C.RESET}"
+    )
+    logger.info(ROW)
+    for step in range(len(ddp_vals)):
+        diff = abs(ddp_vals[step] - fsdp_vals[step])
+        match = f"{C.GREEN}={C.RESET}" if diff < 1e-6 else f"{C.YELLOW}{diff:.1e}{C.RESET}"
+        logger.info(
+            f"  {C.DIM}{step + 1:>4}{C.RESET}  "
+            f"{SEP}  {C.BLUE}{ddp_vals[step]:>14.6f}{C.RESET}  "
+            f"{SEP}  {C.MAGENTA}{fsdp_vals[step]:>14.6f}{C.RESET}  "
+            f"{SEP}  {match:^10}"
+        )
+    logger.info(ROW)
+
 def create_deterministic_data(batch_size, seq_len, vocab_size, device, seed):
     """Create deterministic random training data using torch.randint."""
     generator = torch.Generator(device=device)
@@ -147,10 +173,10 @@ def compute_grad_norm(model):
     return total_norm_sq ** 0.5
 
 
-def train_ddp(rank, config, batches, lr, device):
+def train_ddp(rank, config, batches, lr, device, dtype):
     set_seed(SEED)
-    model = AutoModelForCausalLM.from_config(config).to(device).to(torch.float32)
-    ddp_model = DDP(model, device_ids=[rank])
+    model = AutoModelForCausalLM.from_config(config).to(device).to(dtype)
+    ddp_model = DDP(model, device_ids=[rank]).to(dtype)
     ddp_model.train()
 
     optimizer = torch.optim.Adam(ddp_model.parameters(), lr=lr)
@@ -173,13 +199,13 @@ def train_ddp(rank, config, batches, lr, device):
     return losses, grad_norms, state_dict
 
 
-def train_fsdp2(rank, config, batches, lr, device_map, device_mesh):
+def train_fsdp2(rank, config, batches, lr, device_map, device_mesh, dtype):
     """Run an FSDP2 training loop with Adam.
 
     Returns (losses, grad_norms, state_dict).
     """
     set_seed(SEED)
-    model = AutoModelForCausalLM.from_config(config).to(device_map).to(torch.float32)
+    model = AutoModelForCausalLM.from_config(config).to(device_map).to(dtype)
     model = apply_fsdp2(model, device_mesh, fsdp_plan="auto")
     model.train()
 
@@ -202,34 +228,7 @@ def train_fsdp2(rank, config, batches, lr, device_map, device_mesh):
     state_dict = gather_fsdp2_state_dict(model)
     return losses, grad_norms, state_dict
 
-def log_comparison_table(title, ddp_vals, fsdp_vals):
-    """Log a side-by-side comparison table for DDP vs FSDP2 values."""
-    C = Colors
-    SEP = f"{C.DIM}|{C.RESET}"
-    ROW = f"  {C.DIM}{'─' * 52}{C.RESET}"
-
-    logger.info(f"  {C.BOLD}{title}{C.RESET}")
-    logger.info(ROW)
-    logger.info(
-        f"  {C.DIM}{'step':>4}{C.RESET}  "
-        f"{SEP}  {C.BLUE}{C.BOLD}{'DDP':^14}{C.RESET}  "
-        f"{SEP}  {C.MAGENTA}{C.BOLD}{'FSDP2':^14}{C.RESET}  "
-        f"{SEP}  {C.DIM}{'diff':^10}{C.RESET}"
-    )
-    logger.info(ROW)
-    for step in range(len(ddp_vals)):
-        diff = abs(ddp_vals[step] - fsdp_vals[step])
-        match = f"{C.GREEN}={C.RESET}" if diff < 1e-6 else f"{C.YELLOW}{diff:.1e}{C.RESET}"
-        logger.info(
-            f"  {C.DIM}{step + 1:>4}{C.RESET}  "
-            f"{SEP}  {C.BLUE}{ddp_vals[step]:>14.6f}{C.RESET}  "
-            f"{SEP}  {C.MAGENTA}{fsdp_vals[step]:>14.6f}{C.RESET}  "
-            f"{SEP}  {match:^10}"
-        )
-    logger.info(ROW)
-
-
-def _test_fsdp2_vs_ddp_impl(rank):
+def _test_fsdp2_vs_ddp_impl(rank, dtype):
     """Compare losses, grad norms, and final weights between DDP and FSDP2."""
     init_test_logger()
 
@@ -239,13 +238,13 @@ def _test_fsdp2_vs_ddp_impl(rank):
     batches = create_deterministic_data(BATCH_SIZE, SEQ_LEN, config.vocab_size, device, seed=SEED)
     batches = batches * NUM_STEPS
 
-    ddp_losses, ddp_grad_norms, ddp_state_dict = train_ddp(rank, config, batches, LR, device)
+    ddp_losses, ddp_grad_norms, ddp_state_dict = train_ddp(rank, config, batches, LR, device, dtype)
 
     dist.barrier()
 
     device_map, device_mesh, _ = initialize_fsdp(fsdp_plan="auto")
     fsdp_losses, fsdp_grad_norms, fsdp_state_dict = train_fsdp2(
-        rank, config, batches, LR, device_map, device_mesh
+        rank, config, batches, LR, device_map, device_mesh, dtype
     )
 
     dist.barrier()
@@ -288,11 +287,14 @@ def _test_fsdp2_vs_ddp_impl(rank):
             msg=f"Weight mismatch for {key}",
         )
 
-#TODO(3outeille): test in float32 and bfloat16
-@pytest.mark.parametrize("nproc_per_node", [2])
+@pytest.mark.parametrize("nproc_per_node", [pytest.param(2, id="2gpus")])
+@pytest.mark.parametrize(
+    "dtype",
+    [pytest.param(torch.float32, id="float32"), pytest.param(torch.bfloat16, id="bfloat16")],
+)
 @require_fsdp
 @require_torch_multi_accelerator
-def test_fsdp2_vs_ddp(nproc_per_node):
+def test_fsdp2_vs_ddp(nproc_per_node, dtype):
     """20-step Adam: compare per-step losses, grad norms, and final weights."""
     skip_if_insufficient_devices(nproc_per_node)
-    init_distributed(world_size=nproc_per_node)(_test_fsdp2_vs_ddp_impl)()
+    init_distributed(world_size=nproc_per_node)(_test_fsdp2_vs_ddp_impl)(dtype)
