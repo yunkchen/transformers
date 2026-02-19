@@ -522,7 +522,7 @@ class GenerationMixin(ContinuousMixin):
         else:
             # `clone` calls in this function ensure a consistent stride. See #32227
             model_inputs[input_ids_key] = input_ids.clone(memory_format=torch.contiguous_format)
-            batch_size, sequence_length = input_ids.shape
+            batch_size, sequence_length = input_ids.shape[:2]  # we slice here as some models may have them 3D
 
         # 2. Add important inputs
         model_inputs["cache_position"] = cache_position
