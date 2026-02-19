@@ -286,6 +286,9 @@ class ContinuousBatchProcessor:
             # Early return if the request is finished
             if state.status == RequestStatus.FINISHED:
                 if self.use_async:
+                    # Skip this request, but still consume its token from new_tokens if it had one
+                    if future_state.has_new_token:
+                        current_logits_index += 1
                     continue
                 raise RuntimeError(f"Tried to update FINISHED request {state.request_id} in sync mode.")
             # If the request has a new token, it means prefill has already ended or just finished
@@ -846,6 +849,12 @@ class ContinuousBatchingManager:
             while (not self.stop_event.is_set()) or batch_processor.has_pending_requests():
                 self._inner_generation_loop(batch_processor)
                 self.current_batch += 1
+
+            # In async mode, the last batch's results are still in flight - process them now
+            # We need to switch back to the pair that has the last batch's D2H pending
+            if isinstance(batch_processor.inputs_and_outputs, ContinuousBatchingAsyncIOs):
+                batch_processor.inputs_and_outputs.current_pair = 1 - batch_processor.inputs_and_outputs.current_pair
+                batch_processor.update_batch()
 
         except Exception as e:
             logger.error(f"Error in generation loop: {e}", exc_info=True)
