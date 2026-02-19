@@ -156,6 +156,9 @@ def batched_mm_experts_forward(
     return final_hidden_states.to(hidden_states.dtype)
 
 
+# torch.compiler.disable does not work with fullgraph=True, so we implement a custom operator to opaque this function.
+# This is not "free compilation compatibility" because now inductor won't be able to optimize matmuls inside the loop,
+# but since the matmuls here have dynamic shapes, inductor wouldn't have been able to optimize them anyway.
 def _grouped_mm_fallback(input: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     """
     Fallback grouped matrix multiplication used when `torch.nn.functional.grouped_mm` and `torch._grouped_mm`
@@ -169,12 +172,16 @@ def _grouped_mm_fallback(input: torch.Tensor, weight: torch.Tensor, offs: torch.
         `torch.Tensor`: Output of shape (S, output_dim).
     """
     output = torch.zeros(input.size(0), weight.size(2), device=input.device, dtype=input.dtype)  # (S, output_dim)
-    for i in range(weight.size(0)):
-        start = offs[i - 1] if i > 0 else 0
-        end = offs[i]
+
+    start = 0
+    # single cpu<->gpu sync point here,
+    # avoids multiple syncs inside the loop
+    for i, end in enumerate(offs.tolist()):
         if start >= end:
             continue
         torch.mm(input[start:end], weight[i], out=output[start:end])
+        start = end
+
     return output
 
 
@@ -204,13 +211,17 @@ def _grouped_mm_fallback_backward(ctx, grad_output):
     input, weight = ctx.saved_tensors
     grad_input = torch.zeros_like(input)
     grad_weight = torch.zeros_like(weight)
-    for i in range(weight.size(0)):
-        start = ctx.offs[i - 1] if i > 0 else 0
-        end = ctx.offs[i]
+
+    start = 0
+    # single cpu<->gpu sync point here,
+    # avoids multiple syncs inside the loop
+    for i, end in enumerate(ctx.offs.tolist()):
         if start >= end:
             continue
         torch.mm(grad_output[start:end], weight[i].T, out=grad_input[start:end])
         torch.mm(input[start:end].T, grad_output[start:end], out=grad_weight[i])
+        start = end
+
     return grad_input, grad_weight, None
 
 
