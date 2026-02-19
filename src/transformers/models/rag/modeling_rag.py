@@ -1149,6 +1149,11 @@ class RagTokenForGeneration(RagPreTrainedModel, GenerationMixin):
         **kwargs,
     ):
         # Overwritten -- `do_marginalize` is explicitly set in the output
+
+        if past_key_values is not None:
+            # if past is defined use only last decoder_input_ids
+            decoder_input_ids = decoder_input_ids[:, -1:]
+
         return {
             "input_ids": None,
             "encoder_outputs": encoder_outputs,
@@ -1582,9 +1587,6 @@ class RagTokenForGeneration(RagPreTrainedModel, GenerationMixin):
             batch_size=input_ids.shape[0],
             max_cache_length=generation_config.max_length - 1,
         )
-
-        # Prefill pass
-        generation_mode_kwargs["prefill_outputs"] = self._prefill(input_ids, generation_config, model_kwargs)
 
         return decoding_method(
             self,
