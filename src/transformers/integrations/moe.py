@@ -156,8 +156,6 @@ def batched_mm_experts_forward(
     return final_hidden_states.to(hidden_states.dtype)
 
 
-# Registered as a custom op so torch.compile treats it as an opaque node, avoiding graph breaks from the Python loop.
-@torch.library.custom_op("transformers::grouped_mm_fallback", mutates_args=())
 def _grouped_mm_fallback(input: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
     """
     Fallback grouped matrix multiplication used when `torch.nn.functional.grouped_mm` and `torch._grouped_mm`
@@ -195,6 +193,12 @@ def _grouped_mm_fallback_fake(input: torch.Tensor, weight: torch.Tensor, offs: t
     return torch.empty(input.size(0), weight.size(2), device=input.device, dtype=input.dtype)
 
 
+def _grouped_mm_fallback_setup_context(ctx, inputs, output):
+    """Saves input and weight for backward; offs is stored directly as it is a non-differentiable integer tensor."""
+    ctx.save_for_backward(inputs[0], inputs[1])
+    ctx.offs = inputs[2]
+
+
 def _grouped_mm_fallback_backward(ctx, grad_output):
     """Backward pass for `_grouped_mm_fallback`. Computes grad_input and grad_weight per expert group; offs has no gradient."""
     input, weight = ctx.saved_tensors
@@ -210,14 +214,14 @@ def _grouped_mm_fallback_backward(ctx, grad_output):
     return grad_input, grad_weight, None
 
 
-def _grouped_mm_fallback_setup_context(ctx, inputs, output):
-    """Saves input and weight for backward; offs is stored directly as it is a non-differentiable integer tensor."""
-    ctx.save_for_backward(inputs[0], inputs[1])
-    ctx.offs = inputs[2]
-
-
-_grouped_mm_fallback.register_fake(_grouped_mm_fallback_fake)
-_grouped_mm_fallback.register_autograd(_grouped_mm_fallback_backward, setup_context=_grouped_mm_fallback_setup_context)
+if is_torch_available():
+    torch.library.custom_op("transformers::grouped_mm_fallback", _grouped_mm_fallback, mutates_args=())
+    torch.library.register_fake("transformers::grouped_mm_fallback", _grouped_mm_fallback_fake)
+    torch.library.register_autograd(
+        "transformers::grouped_mm_fallback",
+        _grouped_mm_fallback_backward,
+        setup_context=_grouped_mm_fallback_setup_context,
+    )
 
 
 def _can_use_grouped_mm(
@@ -273,7 +277,7 @@ def _grouped_mm(
         elif hasattr(torch, "_grouped_mm"):
             return torch._grouped_mm(input.to(weight.dtype), weight, offs=offs)
 
-    return _grouped_mm_fallback(input, weight, offs)
+    return torch.ops.transformers.grouped_mm_fallback(input, weight, offs=offs)
 
 
 def _grouped_linear(
