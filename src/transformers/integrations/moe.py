@@ -17,7 +17,7 @@ from functools import wraps
 
 from ..utils import logging
 from ..utils.generic import GeneralInterface
-from ..utils.import_utils import is_torch_available
+from ..utils.import_utils import is_torch_available, is_torchdynamo_compiling
 
 
 if is_torch_available():
@@ -253,7 +253,7 @@ def _can_use_grouped_mm(
     Returns:
         `bool`: True if grouped_mm can be used, False otherwise.
     """
-    if torch.compiler.is_compiling() and weight.dtype != torch.bfloat16:
+    if is_torchdynamo_compiling() and weight.dtype != torch.bfloat16:
         # torch.grouped_mm is not supported in torch.compile with dtypes other than bfloat16
         return False
 
