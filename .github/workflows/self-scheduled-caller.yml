@@ -4,7 +4,7 @@ on:
   repository_dispatch:
   push:
     branches:
-      - trigger-ci-for-torch-2.10-final-rc-on-main-c0d2e26f
+      - trigger-ci-for-torch-2.11-rc-on-main-ffbea2db927e
   workflow_dispatch:
     inputs:
       prev_workflow_run_id:
@@ -21,7 +21,7 @@ on:
 
 # Used for `push` to easily modify the target workflow runs to compare against
 env:
-    prev_workflow_run_id: "20942928897"
+    prev_workflow_run_id: "22125084378"
     other_workflow_run_id: ""
 
 
