@@ -111,7 +111,7 @@ jobs:
         run: |
           python3 -m pip uninstall -y torch torchvision torchaudio torchcodec
           python3 -m pip install --no-cache-dir torchcodec==0.10.0 --index-url https://download.pytorch.org/whl/cpu
-          python3 -m pip install --no-cache-dir torch==2.11.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu126
+          python3 -m pip install --no-cache-dir torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
       - name: NVIDIA-SMI
         run: |
