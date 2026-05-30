@@ -68,11 +68,34 @@ class Qwen3VLVisionPatchEmbed(nn.Module):
         self.proj = nn.Conv3d(self.in_channels, self.embed_dim, kernel_size=kernel_size, stride=kernel_size, bias=True)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        import time as _time
+
+        if not hasattr(self, '_pe_profile_count'):
+            self._pe_profile_count = 0
+        self._pe_profile_count += 1
+        _do_profile = self._pe_profile_count <= 10
+
         target_dtype = self.proj.weight.dtype
-        hidden_states = hidden_states.view(
-            -1, self.in_channels, self.temporal_patch_size, self.patch_size, self.patch_size
-        )
-        hidden_states = self.proj(hidden_states.to(dtype=target_dtype)).view(-1, self.embed_dim)
+        hidden_states = hidden_states.to(dtype=target_dtype)
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            print(f'[PATCH_EMBED] call={self._pe_profile_count} | '
+                  f'input shape={hidden_states.shape} device={hidden_states.device} '
+                  f'dtype={hidden_states.dtype}', flush=True)
+            _t0 = _time.time()
+
+        # Conv3d with kernel_size==stride is equivalent to F.linear
+        # but avoids cudnn's extremely slow algorithm selection for this degenerate case
+        weight_2d = self.proj.weight.reshape(self.embed_dim, -1)  # [1024, 1176]
+        hidden_states = F.linear(hidden_states, weight_2d, self.proj.bias)
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[PATCH_EMBED] F.linear (replaced Conv3d): {(_t1-_t0)*1000:.2f} ms | '
+                  f'output shape={hidden_states.shape} device={hidden_states.device}', flush=True)
+
         return hidden_states
 
 
@@ -273,6 +296,89 @@ class Qwen3VLVisionBlock(GradientCheckpointingLayer):
         )
         hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
         return hidden_states
+
+
+class Qwen3VLPointCloudResampler(nn.Module):
+    """Perceiver Resampler: compresses variable-length point cloud features
+    (n, input_dim) to fixed-length (num_queries, hidden_size) via cross-attention.
+
+    Uses F.scaled_dot_product_attention (SDPA) which automatically dispatches to
+    Flash Attention / Memory-Efficient Attention kernels when available, avoiding
+    O(n) memory for the full attention matrix."""
+
+    def __init__(self, input_dim: int, hidden_size: int, num_queries: int = 256,
+                 num_heads: int = 8, num_layers: int = 1):
+        super().__init__()
+        self.num_queries = num_queries
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.input_proj = nn.Linear(input_dim, hidden_size)
+        self.query_tokens = nn.Parameter(torch.randn(1, num_queries, hidden_size) * 0.02)
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            self.layers.append(nn.ModuleDict({
+                'q_proj': nn.Linear(hidden_size, hidden_size),
+                'k_proj': nn.Linear(hidden_size, hidden_size),
+                'v_proj': nn.Linear(hidden_size, hidden_size),
+                'o_proj': nn.Linear(hidden_size, hidden_size),
+                'cross_norm': nn.LayerNorm(hidden_size),
+                'kv_norm': nn.LayerNorm(hidden_size),
+                'ffn': nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size * 4),
+                    nn.GELU(),
+                    nn.Linear(hidden_size * 4, hidden_size),
+                ),
+                'ffn_norm': nn.LayerNorm(hidden_size),
+            }))
+        self.out_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Supports both single and batched input.
+
+        Args:
+            x: (B, n_max, input_dim) padded batch, or (n, input_dim) single unbatched.
+            attention_mask: (B, n_max) bool, True = valid position. None means all valid.
+        Returns:
+            (B, num_queries, hidden_size) batched, or (num_queries, hidden_size) unbatched.
+        """
+        unbatched = x.dim() == 2
+        if unbatched:
+            x = x.unsqueeze(0)
+
+        B, n_max = x.shape[0], x.shape[1]
+        x = self.input_proj(x)  # (B, n_max, hidden_size)
+        queries = self.query_tokens.expand(B, -1, -1)  # (B, num_queries, hidden_size)
+
+        # Build SDPA float mask: 0.0 for valid, -inf for padding
+        sdpa_mask = None
+        if attention_mask is not None:
+            sdpa_mask = torch.zeros(
+                B, 1, self.num_queries, n_max, dtype=x.dtype, device=x.device,
+            )
+            sdpa_mask.masked_fill_(~attention_mask[:, None, None, :], float('-inf'))
+
+        for layer in self.layers:
+            # Cross-attention: queries attend to input features
+            residual = queries
+            q = layer['cross_norm'](queries)
+            kv = layer['kv_norm'](x)
+            # Project to multi-head Q/K/V: (B, seq, heads, head_dim) → (B, heads, seq, head_dim)
+            q = layer['q_proj'](q).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+            k = layer['k_proj'](kv).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+            v = layer['v_proj'](kv).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+            # SDPA: auto-dispatches to Flash Attention / Memory-Efficient kernels
+            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=sdpa_mask)
+            attn_out = attn_out.transpose(1, 2).reshape(B, -1, self.num_heads * self.head_dim)
+            attn_out = layer['o_proj'](attn_out)
+            queries = residual + attn_out
+            # FFN
+            residual = queries
+            queries = residual + layer['ffn'](layer['ffn_norm'](queries))
+        queries = self.out_norm(queries)
+
+        if unbatched:
+            return queries.squeeze(0)
+        return queries
 
 
 class Qwen3VLTextRotaryEmbedding(nn.Module):
@@ -711,10 +817,43 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
         Returns:
             `torch.Tensor`: hidden_states.
         """
+        import time as _time
+
+        if not hasattr(self, '_vis_profile_count'):
+            self._vis_profile_count = 0
+        self._vis_profile_count += 1
+        _do_profile = self._vis_profile_count <= 10
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t_total = _time.time()
+            print(f'[VIS_PROFILE] call={self._vis_profile_count} | '
+                  f'hidden_states.shape={hidden_states.shape} device={hidden_states.device} '
+                  f'dtype={hidden_states.dtype} '
+                  f'grid_thw.shape={grid_thw.shape} grid_thw=\n{grid_thw}', flush=True)
+            print(f'[VIS_PROFILE] GPU mem allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB, '
+                  f'reserved: {torch.cuda.memory_reserved()/1e9:.2f} GB', flush=True)
+            gc_status = [blk.gradient_checkpointing for blk in self.blocks]
+            print(f'[VIS_PROFILE] blocks gradient_checkpointing: {set(gc_status)}', flush=True)
+            _t0 = _time.time()
+
         hidden_states = self.patch_embed(hidden_states)
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[VIS_PROFILE] patch_embed: {(_t1-_t0)*1000:.2f} ms | '
+                  f'output shape={hidden_states.shape} device={hidden_states.device}', flush=True)
+            _t0 = _t1
 
         pos_embeds = self.fast_pos_embed_interpolate(grid_thw)
         hidden_states = hidden_states + pos_embeds
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[VIS_PROFILE] fast_pos_embed_interpolate + add: {(_t1-_t0)*1000:.2f} ms', flush=True)
+            _t0 = _t1
 
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
 
@@ -734,6 +873,13 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
         )
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
 
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[VIS_PROFILE] rot_pos_emb + prep + cu_seqlens: {(_t1-_t0)*1000:.2f} ms | '
+                  f'seq_len={seq_len} cu_seqlens.shape={cu_seqlens.shape}', flush=True)
+            _t0 = _t1
+
         deepstack_feature_lists = []
         for layer_num, blk in enumerate(self.blocks):
             hidden_states = blk(
@@ -747,8 +893,26 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
                     hidden_states
                 )
                 deepstack_feature_lists.append(deepstack_feature)
+            if _do_profile and layer_num in (0, 5, 11, 17, 23):
+                torch.cuda.synchronize()
+                _t1 = _time.time()
+                print(f'[VIS_PROFILE] block[0..{layer_num}] cumulative: {(_t1-_t0)*1000:.2f} ms', flush=True)
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[VIS_PROFILE] all blocks total: {(_t1-_t0)*1000:.2f} ms', flush=True)
+            _t0 = _t1
 
         hidden_states = self.merger(hidden_states)
+
+        if _do_profile:
+            torch.cuda.synchronize()
+            _t1 = _time.time()
+            print(f'[VIS_PROFILE] merger: {(_t1-_t0)*1000:.2f} ms', flush=True)
+            print(f'[VIS_PROFILE] GPU mem after visual: {torch.cuda.memory_allocated()/1e9:.2f} GB, '
+                  f'reserved: {torch.cuda.memory_reserved()/1e9:.2f} GB', flush=True)
+            print(f'[VIS_PROFILE] TOTAL visual forward: {(_t1-_t_total)*1000:.2f} ms', flush=True)
 
         return hidden_states, deepstack_feature_lists
 
@@ -897,6 +1061,24 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         self.visual = Qwen3VLVisionModel._from_config(config.vision_config)
         self.language_model = Qwen3VLTextModel._from_config(config.text_config)
         self.rope_deltas = None  # cache rope_deltas here
+
+        # Point cloud Perceiver Resampler and DeepStack projectors
+        pc_input_dim = getattr(config, 'point_cloud_input_dim', 512)
+        num_pc_queries = getattr(config, 'num_point_cloud_queries', 256)
+        text_hidden_size = config.text_config.hidden_size
+        num_deepstack_layers = len(config.vision_config.deepstack_visual_indexes)
+        self.point_cloud_resampler = Qwen3VLPointCloudResampler(
+            pc_input_dim, text_hidden_size, num_queries=num_pc_queries
+        )
+        # DeepStack MLPs: operate on Resampler output (hidden_size -> hidden_size)
+        self.point_cloud_deepstack_projectors = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(text_hidden_size, text_hidden_size),
+                nn.GELU(),
+                nn.Linear(text_hidden_size, text_hidden_size),
+            )
+            for _ in range(num_deepstack_layers)
+        ])
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1069,6 +1251,7 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         inputs_embeds: torch.FloatTensor,
         image_features: Optional[torch.FloatTensor] = None,
         video_features: Optional[torch.FloatTensor] = None,
+        point_cloud_features: Optional[torch.FloatTensor] = None,
     ):
         """
         Obtains multimodal placeholder mask from `input_ids` or `inputs_embeds`, and checks that the placeholder token count is
@@ -1083,9 +1266,14 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
                 torch.tensor(self.config.video_token_id, dtype=torch.long, device=inputs_embeds.device)
             )
             special_video_mask = special_video_mask.all(-1)
+            special_pc_mask = inputs_embeds == self.get_input_embeddings()(
+                torch.tensor(self.config.point_cloud_token_id, dtype=torch.long, device=inputs_embeds.device)
+            )
+            special_pc_mask = special_pc_mask.all(-1)
         else:
             special_image_mask = input_ids == self.config.image_token_id
             special_video_mask = input_ids == self.config.video_token_id
+            special_pc_mask = input_ids == self.config.point_cloud_token_id
 
         n_image_tokens = special_image_mask.sum()
         special_image_mask = special_image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
@@ -1101,7 +1289,14 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
                 f"Videos features and video tokens do not match: tokens: {n_video_tokens}, features {video_features.shape[0]}"
             )
 
-        return special_image_mask, special_video_mask
+        n_pc_tokens = special_pc_mask.sum()
+        special_pc_mask = special_pc_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+        if point_cloud_features is not None and inputs_embeds[special_pc_mask].numel() != point_cloud_features.numel():
+            raise ValueError(
+                f"Point cloud features and point cloud tokens do not match: tokens: {n_pc_tokens}, features {point_cloud_features.shape[0]}"
+            )
+
+        return special_image_mask, special_video_mask, special_pc_mask
 
     @auto_docstring
     @check_model_inputs
@@ -1116,6 +1311,8 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         pixel_values_videos: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
+        point_cloud_features: Optional[torch.Tensor] = None,
+        point_cloud_sizes: Optional[torch.LongTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> Union[tuple, Qwen3VLModelOutputWithPast]:
@@ -1124,6 +1321,10 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
             The temporal, height and width of feature shape of each image in LLM.
         video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
             The temporal, height and width of feature shape of each video in LLM.
+        point_cloud_features (`torch.Tensor` of shape `(total_n, input_dim)`, *optional*):
+            Pre-extracted point cloud features from Sonata model.
+        point_cloud_sizes (`torch.LongTensor` of shape `(num_point_clouds,)`, *optional*):
+            Number of raw features per point cloud, used to split concatenated features for Resampler.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -1133,11 +1334,12 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
 
         image_mask = None
         video_mask = None
+        pc_mask = None
 
         if pixel_values is not None:
             image_embeds, deepstack_image_embeds = self.get_image_features(pixel_values, image_grid_thw)
             image_embeds = torch.cat(image_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
-            image_mask, _ = self.get_placeholder_mask(
+            image_mask, _, _ = self.get_placeholder_mask(
                 input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds
             )
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
@@ -1145,34 +1347,81 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         if pixel_values_videos is not None:
             video_embeds, deepstack_video_embeds = self.get_video_features(pixel_values_videos, video_grid_thw)
             video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
-            _, video_mask = self.get_placeholder_mask(
+            _, video_mask, _ = self.get_placeholder_mask(
                 input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
             )
             inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
 
+        # Handle point cloud features via Perceiver Resampler (batched)
+        deepstack_pc_embeds = None
+        if point_cloud_features is not None:
+            pc_feats = point_cloud_features.to(inputs_embeds.device, inputs_embeds.dtype)
+            sizes = point_cloud_sizes.tolist()
+            num_pc = len(sizes)
+            max_n = max(sizes)
+
+            # Pad variable-length features to uniform length for batched processing
+            feat_list = torch.split(pc_feats, sizes)
+            padded = pc_feats.new_zeros(num_pc, max_n, pc_feats.shape[-1])
+            attn_mask = torch.zeros(num_pc, max_n, device=pc_feats.device, dtype=torch.bool)
+            for i, (feat, n) in enumerate(zip(feat_list, sizes)):
+                padded[i, :n] = feat
+                attn_mask[i, :n] = True
+
+            # Single batched Resampler call — all point clouds processed in parallel
+            pc_embeds_batch = self.point_cloud_resampler(
+                padded, attention_mask=attn_mask
+            )  # (num_pc, K, hidden_size)
+            pc_embeds = pc_embeds_batch.reshape(-1, pc_embeds_batch.shape[-1])  # (total_K, hidden_size)
+
+            _, _, pc_mask = self.get_placeholder_mask(
+                input_ids, inputs_embeds=inputs_embeds, point_cloud_features=pc_embeds
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(pc_mask, pc_embeds)
+            # Generate DeepStack features from Resampler output
+            deepstack_pc_embeds = [
+                proj(pc_embeds) for proj in self.point_cloud_deepstack_projectors
+            ]
+
+        # Build combined visual_pos_masks and deepstack_visual_embeds
+        # Collect all modality masks (reduced to 2D) and their deepstack embeds
+        modality_masks = []  # list of (mask_2d, deepstack_list)
+        if image_mask is not None:
+            image_mask_2d = image_mask[..., 0]
+            modality_masks.append((image_mask_2d, deepstack_image_embeds))
+        if video_mask is not None:
+            video_mask_2d = video_mask[..., 0]
+            modality_masks.append((video_mask_2d, deepstack_video_embeds))
+        if pc_mask is not None:
+            pc_mask_2d = pc_mask[..., 0]
+            modality_masks.append((pc_mask_2d, deepstack_pc_embeds))
+
         visual_pos_masks = None
         deepstack_visual_embeds = None
-        if image_mask is not None and video_mask is not None:
-            # aggregate visual_pos_masks and deepstack_visual_embeds
-            image_mask = image_mask[..., 0]
-            video_mask = video_mask[..., 0]
-            visual_pos_masks = image_mask | video_mask
-            deepstack_visual_embeds = []
-            image_mask_joint = image_mask[visual_pos_masks]
-            video_mask_joint = video_mask[visual_pos_masks]
-            for img_embed, vid_embed in zip(deepstack_image_embeds, deepstack_video_embeds):
-                embed_joint = img_embed.new_zeros(visual_pos_masks.sum(), img_embed.shape[-1]).to(img_embed.device)
-                embed_joint[image_mask_joint, :] = img_embed
-                embed_joint[video_mask_joint, :] = vid_embed
-                deepstack_visual_embeds.append(embed_joint)
-        elif image_mask is not None:
-            image_mask = image_mask[..., 0]
-            visual_pos_masks = image_mask
-            deepstack_visual_embeds = deepstack_image_embeds
-        elif video_mask is not None:
-            video_mask = video_mask[..., 0]
-            visual_pos_masks = video_mask
-            deepstack_visual_embeds = deepstack_video_embeds
+        if len(modality_masks) > 0:
+            # Combine all masks with OR
+            combined_mask = modality_masks[0][0]
+            for mask, _ in modality_masks[1:]:
+                combined_mask = combined_mask | mask
+            visual_pos_masks = combined_mask
+
+            if len(modality_masks) == 1:
+                # Single modality: use its deepstack directly
+                deepstack_visual_embeds = modality_masks[0][1]
+            else:
+                # Multiple modalities: merge deepstack embeds by position
+                num_deepstack = len(modality_masks[0][1])
+                deepstack_visual_embeds = []
+                joint_masks = [(m[visual_pos_masks], m) for m, _ in modality_masks]
+                hidden_dim = modality_masks[0][1][0].shape[-1]
+                device = modality_masks[0][1][0].device
+                for layer_idx in range(num_deepstack):
+                    embed_joint = torch.zeros(
+                        visual_pos_masks.sum(), hidden_dim, device=device, dtype=inputs_embeds.dtype
+                    )
+                    for (joint_m, _), (_, ds_list) in zip(joint_masks, modality_masks):
+                        embed_joint[joint_m, :] = ds_list[layer_idx].to(device, inputs_embeds.dtype)
+                    deepstack_visual_embeds.append(embed_joint)
 
         if position_ids is None:
             attention_mask_tensor = (
@@ -1324,6 +1573,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
         pixel_values_videos: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
+        point_cloud_features: Optional[torch.Tensor] = None,
+        point_cloud_sizes: Optional[torch.LongTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
@@ -1337,6 +1588,10 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
             The temporal, height and width of feature shape of each image in LLM.
         video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
             The temporal, height and width of feature shape of each video in LLM.
+        point_cloud_features (`torch.Tensor` of shape `(total_n, 512)`, *optional*):
+            Pre-extracted point cloud features from Sonata model.
+        point_cloud_sizes (`torch.LongTensor` of shape `(num_point_clouds,)`, *optional*):
+            Number of raw features per point cloud.
 
         Example:
             TODO: Add example
@@ -1347,6 +1602,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
+            point_cloud_features=point_cloud_features,
+            point_cloud_sizes=point_cloud_sizes,
             position_ids=position_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
@@ -1385,6 +1642,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
         pixel_values_videos=None,
         image_grid_thw=None,
         video_grid_thw=None,
+        point_cloud_features=None,
+        point_cloud_sizes=None,
         **kwargs,
     ):
         # Overwritten -- in specific circumstances we don't want to forward image inputs to the model
@@ -1400,6 +1659,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
             video_grid_thw=video_grid_thw,
+            point_cloud_features=point_cloud_features,
+            point_cloud_sizes=point_cloud_sizes,
             use_cache=use_cache,
             **kwargs,
         )
@@ -1410,6 +1671,8 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
         if cache_position[0] != 0:
             model_inputs["pixel_values"] = None
             model_inputs["pixel_values_videos"] = None
+            model_inputs["point_cloud_features"] = None
+            model_inputs["point_cloud_sizes"] = None
 
         return model_inputs
 
