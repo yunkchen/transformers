@@ -299,86 +299,64 @@ class Qwen3VLVisionBlock(GradientCheckpointingLayer):
 
 
 class Qwen3VLPointCloudResampler(nn.Module):
-    """Perceiver Resampler: compresses variable-length point cloud features
-    (n, input_dim) to fixed-length (num_queries, hidden_size) via cross-attention.
+    """Simplified PC projector (2026-04-23 rewrite).
 
-    Uses F.scaled_dot_product_attention (SDPA) which automatically dispatches to
-    Flash Attention / Memory-Efficient Attention kernels when available, avoiding
-    O(n) memory for the full attention matrix."""
+    Old design was a Perceiver with 256 queries + cross-attention. That is over-
+    parameterized for scene-constant PC data (each source LiDAR cloud is reused
+    across ~26k samples, so the resampler has no per-sample signal to compress).
 
-    def __init__(self, input_dim: int, hidden_size: int, num_queries: int = 256,
+    New design: mean-pool variable-length features to a single vector via a
+    bottleneck, then expand to `num_queries` output tokens. No cross-attention.
+    `num_heads` / `num_layers` kwargs are retained for API compatibility but unused.
+    """
+
+    def __init__(self, input_dim: int, hidden_size: int, num_queries: int = 32,
                  num_heads: int = 8, num_layers: int = 1):
         super().__init__()
         self.num_queries = num_queries
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
+        self.hidden_size = hidden_size
+        bottleneck = 256
         self.input_proj = nn.Linear(input_dim, hidden_size)
-        self.query_tokens = nn.Parameter(torch.randn(1, num_queries, hidden_size) * 0.02)
-        self.layers = nn.ModuleList()
-        for _ in range(num_layers):
-            self.layers.append(nn.ModuleDict({
-                'q_proj': nn.Linear(hidden_size, hidden_size),
-                'k_proj': nn.Linear(hidden_size, hidden_size),
-                'v_proj': nn.Linear(hidden_size, hidden_size),
-                'o_proj': nn.Linear(hidden_size, hidden_size),
-                'cross_norm': nn.LayerNorm(hidden_size),
-                'kv_norm': nn.LayerNorm(hidden_size),
-                'ffn': nn.Sequential(
-                    nn.Linear(hidden_size, hidden_size * 4),
-                    nn.GELU(),
-                    nn.Linear(hidden_size * 4, hidden_size),
-                ),
-                'ffn_norm': nn.LayerNorm(hidden_size),
-            }))
+        self.pool_norm = nn.LayerNorm(hidden_size)
+        self.pool_to_bot = nn.Linear(hidden_size, bottleneck)
+        self.expand_tokens = nn.Linear(bottleneck, bottleneck * num_queries)
+        self.token_out_proj = nn.Linear(bottleneck, hidden_size)
         self.out_norm = nn.LayerNorm(hidden_size)
 
     def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Supports both single and batched input.
-
-        Args:
-            x: (B, n_max, input_dim) padded batch, or (n, input_dim) single unbatched.
-            attention_mask: (B, n_max) bool, True = valid position. None means all valid.
+        """Args:
+            x: (B, n_max, input_dim) padded batch, or (n, input_dim) unbatched.
+            attention_mask: (B, n_max) bool, True = valid. None = all valid.
         Returns:
             (B, num_queries, hidden_size) batched, or (num_queries, hidden_size) unbatched.
         """
         unbatched = x.dim() == 2
         if unbatched:
             x = x.unsqueeze(0)
+            if attention_mask is not None:
+                attention_mask = attention_mask.unsqueeze(0)
 
-        B, n_max = x.shape[0], x.shape[1]
-        x = self.input_proj(x)  # (B, n_max, hidden_size)
-        queries = self.query_tokens.expand(B, -1, -1)  # (B, num_queries, hidden_size)
+        B = x.shape[0]
+        projected = self.input_proj(x)  # (B, n_max, hidden_size)
 
-        # Build SDPA float mask: 0.0 for valid, -inf for padding
-        sdpa_mask = None
         if attention_mask is not None:
-            sdpa_mask = torch.zeros(
-                B, 1, self.num_queries, n_max, dtype=x.dtype, device=x.device,
-            )
-            sdpa_mask.masked_fill_(~attention_mask[:, None, None, :], float('-inf'))
+            mask_f = attention_mask.unsqueeze(-1).to(projected.dtype)  # (B, n_max, 1)
+            masked_sum = (projected * mask_f).sum(dim=1)  # (B, hidden_size)
+            denom = mask_f.sum(dim=1).clamp_min(1.0)
+            pooled = masked_sum / denom
+        else:
+            pooled = projected.mean(dim=1)
 
-        for layer in self.layers:
-            # Cross-attention: queries attend to input features
-            residual = queries
-            q = layer['cross_norm'](queries)
-            kv = layer['kv_norm'](x)
-            # Project to multi-head Q/K/V: (B, seq, heads, head_dim) → (B, heads, seq, head_dim)
-            q = layer['q_proj'](q).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-            k = layer['k_proj'](kv).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-            v = layer['v_proj'](kv).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-            # SDPA: auto-dispatches to Flash Attention / Memory-Efficient kernels
-            attn_out = F.scaled_dot_product_attention(q, k, v, attn_mask=sdpa_mask)
-            attn_out = attn_out.transpose(1, 2).reshape(B, -1, self.num_heads * self.head_dim)
-            attn_out = layer['o_proj'](attn_out)
-            queries = residual + attn_out
-            # FFN
-            residual = queries
-            queries = residual + layer['ffn'](layer['ffn_norm'](queries))
-        queries = self.out_norm(queries)
+        pooled = self.pool_norm(pooled)
+        bot = self.pool_to_bot(pooled)                               # (B, bottleneck)
+        expanded = self.expand_tokens(bot)                           # (B, bottleneck * num_queries)
+        expanded = expanded.view(B, self.num_queries, -1)            # (B, num_queries, bottleneck)
+        tokens = self.token_out_proj(expanded)                       # (B, num_queries, hidden_size)
+        tokens = self.out_norm(tokens)
 
         if unbatched:
-            return queries.squeeze(0)
-        return queries
+            return tokens.squeeze(0)
+        return tokens
 
 
 class Qwen3VLTextRotaryEmbedding(nn.Module):
@@ -1064,7 +1042,7 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
 
         # Point cloud Perceiver Resampler and DeepStack projectors
         pc_input_dim = getattr(config, 'point_cloud_input_dim', 512)
-        num_pc_queries = getattr(config, 'num_point_cloud_queries', 256)
+        num_pc_queries = getattr(config, 'num_point_cloud_queries', 32)
         text_hidden_size = config.text_config.hidden_size
         num_deepstack_layers = len(config.vision_config.deepstack_visual_indexes)
         self.point_cloud_resampler = Qwen3VLPointCloudResampler(
@@ -1079,6 +1057,11 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
             )
             for _ in range(num_deepstack_layers)
         ])
+        # Zero-init final linear of each deepstack projector for stable ramp-in
+        for _proj in self.point_cloud_deepstack_projectors:
+            nn.init.zeros_(_proj[-1].weight)
+            if _proj[-1].bias is not None:
+                nn.init.zeros_(_proj[-1].bias)
 
         # Initialize weights and apply final processing
         self.post_init()
